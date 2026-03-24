@@ -345,10 +345,14 @@ class AgentleToolToOpenRouterToolAdapter(Adapter[Tool, OpenRouterTool]):
                 else:
                     # Empty Literal (shouldn't happen, but handle gracefully)
                     prop_schema = {"type": "string"}
-            elif inner_type and self._is_complex_type(inner_type):
+            elif inner_type and (
+                self._is_complex_type(inner_type)
+                or get_origin(inner_type) in (list, tuple, set, typing.List, typing.Tuple, typing.Set, dict, typing.Dict, frozenset, typing.FrozenSet, Union)
+                or inner_type in (list, tuple, set, dict, frozenset)
+            ):
                 # Expand the complex type to its full JSON schema
                 logger.debug(
-                    f"Expanding complex type for parameter '{param_name}': {param_type_str}"
+                    f"Expanding generic or complex type for parameter '{param_name}': {param_type_str}"
                 )
                 prop_schema = self._expand_complex_type(inner_type)
                 

@@ -93,7 +93,7 @@ class WhatsAppBotConfig(BaseModel):
         default=5,
         description="Maximum number of split messages to send (remaining will be grouped)",
     )
-    error_message: str = Field(
+    error_message: str | None = Field(
         default="Sorry, I encountered an error processing your message. Please try again.",
         description="Default error message",
     )

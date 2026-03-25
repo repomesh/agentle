@@ -3054,6 +3054,10 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
         self, to: PhoneNumber, reply_to: str | None = None
     ) -> None:
         """Send error message to user."""
+        if self.config.error_message is None:
+            logger.debug(f"[SEND_ERROR] Error message configuration is None, not sending error message to {to}")
+            return
+
         logger.warning(f"[SEND_ERROR] Sending error message to {to}")
         try:
             # Only quote if quote_messages is enabled

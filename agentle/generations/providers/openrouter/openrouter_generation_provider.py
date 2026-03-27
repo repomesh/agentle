@@ -1485,7 +1485,7 @@ class OpenRouterGenerationProvider(GenerationProvider):
 
         # Configure timeout for httpx client
         # Use the generation config timeout or default to 300 seconds (5 minutes) for vision/PDF tasks
-        timeout_seconds = _generation_config.timeout_in_seconds or 300.0
+        timeout_seconds = _generation_config.timeout_in_seconds or 600.0
         client = self.http_client or httpx.AsyncClient(
             timeout=httpx.Timeout(
                 timeout=timeout_seconds,

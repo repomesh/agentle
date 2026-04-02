@@ -9,6 +9,7 @@ API message format.
 
 from __future__ import annotations
 
+import json
 from typing import override
 
 from rsb.adapters.adapter import Adapter
@@ -33,7 +34,6 @@ from agentle.generations.providers.openrouter._types import (
     OpenRouterUserMessage,
 )
 from agentle.generations.tools.tool_execution_result import ToolExecutionResult
-import json
 
 
 class AgentleMessageToOpenRouterMessageAdapter(
@@ -172,8 +172,10 @@ class AgentleMessageToOpenRouterMessageAdapter(
                         if tool_calls:
                             assistant_msg["tool_calls"] = tool_calls
 
-                        if hasattr(message, "reasoning") and message.reasoning:
-                            assistant_msg["reasoning"] = message.reasoning
+                        self._apply_reasoning_fields(
+                            assistant_msg,
+                            message,
+                        )
 
                         messages.append(assistant_msg)
 
@@ -221,11 +223,20 @@ class AgentleMessageToOpenRouterMessageAdapter(
                 if tool_calls:
                     result["tool_calls"] = tool_calls
 
-                # Add reasoning if present
-                if hasattr(message, "reasoning") and message.reasoning:
-                    result["reasoning"] = message.reasoning
+                self._apply_reasoning_fields(result, message)
 
                 return result
+
+    def _apply_reasoning_fields(
+        self,
+        target: OpenRouterAssistantMessage,
+        message: AssistantMessage,
+    ) -> None:
+        if hasattr(message, "reasoning") and message.reasoning:
+            target["reasoning"] = message.reasoning
+
+        if hasattr(message, "reasoning_details") and message.reasoning_details:
+            target["reasoning_details"] = list(message.reasoning_details)
 
     def _serialize_tool_arguments(self, args: object) -> str:
         """

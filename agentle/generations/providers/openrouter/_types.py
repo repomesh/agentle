@@ -6,7 +6,7 @@ This module defines TypedDicts for all OpenRouter-specific structures,
 ensuring type safety throughout the provider implementation.
 """
 
-from typing import TypedDict, Literal, NotRequired, Required, Sequence
+from typing import Any, Literal, NotRequired, Required, Sequence, TypedDict
 
 
 class OpenRouterImageUrl(TypedDict):
@@ -112,6 +112,7 @@ class OpenRouterAssistantMessage(TypedDict):
     content: str | None
     tool_calls: NotRequired[Sequence[OpenRouterToolCall]]
     reasoning: NotRequired[str]  # Reasoning from models that support it
+    reasoning_details: NotRequired[Sequence[dict[str, Any]]]
 
 
 class OpenRouterToolMessage(TypedDict):
@@ -192,6 +193,15 @@ class OpenRouterResponseFormat(TypedDict):
     json_schema: OpenRouterJsonSchema
 
 
+class OpenRouterReasoning(TypedDict, total=False):
+    """Reasoning or thinking configuration."""
+
+    effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"]
+    max_tokens: int
+    exclude: bool
+    enabled: bool
+
+
 class OpenRouterPdfPluginConfig(TypedDict):
     """PDF parsing plugin configuration."""
 
@@ -232,6 +242,7 @@ class OpenRouterResponseMessage(TypedDict):
     content: str | None
     tool_calls: NotRequired[Sequence[OpenRouterToolCall]]
     reasoning: NotRequired[str]  # Reasoning from models that support it
+    reasoning_details: NotRequired[Sequence[dict[str, Any]]]
 
 
 class OpenRouterChoice(TypedDict):
@@ -264,6 +275,7 @@ class OpenRouterStreamDelta(TypedDict):
     content: NotRequired[str]
     tool_calls: NotRequired[Sequence[OpenRouterToolCall]]
     reasoning: NotRequired[str]
+    reasoning_details: NotRequired[Sequence[dict[str, Any]]]
 
 
 class OpenRouterStreamChoice(TypedDict):
@@ -312,6 +324,7 @@ class OpenRouterRequest(TypedDict, total=False):
     tool_choice: Literal["auto", "none"] | dict[str, object]
     response_format: OpenRouterResponseFormat
     provider: OpenRouterProviderPreferences
+    reasoning: OpenRouterReasoning
     plugins: Sequence[OpenRouterPlugin]
     transforms: Sequence[Literal["middle-out"]]  # Context compression
 

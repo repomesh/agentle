@@ -21,7 +21,15 @@ access to all relevant metadata and configurations.
 from .choice import Choice
 from .generation import Generation
 from .generation_config import GenerationConfig
+from .generation_reasoning import GenerationReasoning
 from .trace_params import TraceParams
 from .usage import Usage
 
-__all__ = ["Choice", "Generation", "GenerationConfig", "TraceParams", "Usage"]
+__all__ = [
+    "Choice",
+    "Generation",
+    "GenerationConfig",
+    "GenerationReasoning",
+    "TraceParams",
+    "Usage",
+]

@@ -15,6 +15,12 @@ from __future__ import annotations
 
 from typing import NotRequired, TypedDict
 
+from agentle.generations.models.generation.generation_reasoning import (
+    GenerationReasoning,
+)
+from agentle.generations.models.generation.generation_reasoning_dict import (
+    GenerationReasoningDict,
+)
 from agentle.generations.models.generation.trace_params import TraceParams
 
 
@@ -56,3 +62,5 @@ class GenerationConfigDict(TypedDict):
     timeout_s: NotRequired[float | None]
 
     timeout_m: NotRequired[float | None]
+
+    reasoning: NotRequired[GenerationReasoning | GenerationReasoningDict | None]

@@ -74,6 +74,7 @@ class OpenRouterMessageToGeneratedAssistantMessageAdapter[T](
 
         # Extract reasoning if present (some models support this)
         reasoning = openrouter_message.get("reasoning")
+        reasoning_details = openrouter_message.get("reasoning_details")
 
         # Extract tool calls if present
         tool_calls_data: Sequence[OpenRouterToolCall] = openrouter_message.get(
@@ -149,4 +150,5 @@ class OpenRouterMessageToGeneratedAssistantMessageAdapter[T](
             parts=parts,
             parsed=cast(T, parsed_data),
             reasoning=reasoning,
+            reasoning_details=reasoning_details,
         )

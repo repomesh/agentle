@@ -1287,6 +1287,10 @@ class OpenRouterGenerationProvider(GenerationProvider):
             request_body["top_p"] = _generation_config.top_p
         if _generation_config.top_k is not None:
             request_body["top_k"] = _generation_config.top_k
+        if _generation_config.reasoning is not None:
+            request_body["reasoning"] = _generation_config.reasoning.model_dump(
+                exclude_none=True
+            )
 
         # Add plugins if configured
         if self.plugins:
@@ -1467,6 +1471,10 @@ class OpenRouterGenerationProvider(GenerationProvider):
             request_body["top_p"] = _generation_config.top_p
         if _generation_config.top_k is not None:
             request_body["top_k"] = _generation_config.top_k
+        if _generation_config.reasoning is not None:
+            request_body["reasoning"] = _generation_config.reasoning.model_dump(
+                exclude_none=True
+            )
 
         # Add plugins if configured
         if self.plugins:

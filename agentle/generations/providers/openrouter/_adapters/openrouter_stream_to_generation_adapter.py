@@ -80,6 +80,7 @@ class OpenRouterStreamToGenerationAdapter[T]:
         # Accumulate content across chunks
         accumulated_content = ""
         accumulated_reasoning = ""
+        accumulated_reasoning_details: list[dict[str, Any]] = []
         accumulated_tool_calls: dict[str, dict[str, Any]] = {}
         buffer = ""
 
@@ -103,10 +104,16 @@ class OpenRouterStreamToGenerationAdapter[T]:
                     # Check for stream end
                     if data == "[DONE]":
                         # Yield final generation if we have accumulated content
-                        if accumulated_content or accumulated_tool_calls:
+                        if (
+                            accumulated_content
+                            or accumulated_reasoning
+                            or accumulated_reasoning_details
+                            or accumulated_tool_calls
+                        ):
                             yield self._build_generation(
                                 accumulated_content,
                                 accumulated_reasoning,
+                                accumulated_reasoning_details,
                                 accumulated_tool_calls,
                             )
                         return
@@ -134,6 +141,14 @@ class OpenRouterStreamToGenerationAdapter[T]:
                             # Accumulate reasoning
                             if "reasoning" in delta and delta["reasoning"]:
                                 accumulated_reasoning += delta["reasoning"]
+
+                            if (
+                                "reasoning_details" in delta
+                                and delta["reasoning_details"]
+                            ):
+                                accumulated_reasoning_details.extend(
+                                    delta["reasoning_details"]
+                                )
 
                             # Accumulate tool calls
                             if "tool_calls" in delta:
@@ -166,6 +181,7 @@ class OpenRouterStreamToGenerationAdapter[T]:
                                 yield self._build_generation(
                                     accumulated_content,
                                     accumulated_reasoning,
+                                    accumulated_reasoning_details,
                                     accumulated_tool_calls,
                                 )
                                 return
@@ -174,6 +190,7 @@ class OpenRouterStreamToGenerationAdapter[T]:
                             yield self._build_generation(
                                 accumulated_content,
                                 accumulated_reasoning,
+                                accumulated_reasoning_details,
                                 accumulated_tool_calls,
                             )
 
@@ -185,6 +202,7 @@ class OpenRouterStreamToGenerationAdapter[T]:
         self,
         content: str,
         reasoning: str,
+        reasoning_details: list[dict[str, Any]],
         tool_calls: dict[str, dict[str, Any]],
     ) -> Generation[None]:
         """
@@ -193,6 +211,7 @@ class OpenRouterStreamToGenerationAdapter[T]:
         Args:
             content: Accumulated text content.
             reasoning: Accumulated reasoning.
+            reasoning_details: Accumulated structured reasoning details.
             tool_calls: Accumulated tool calls.
 
         Returns:
@@ -241,6 +260,7 @@ class OpenRouterStreamToGenerationAdapter[T]:
             parts=parts,
             parsed=parsed_data,
             reasoning=reasoning if reasoning else None,
+            reasoning_details=reasoning_details if reasoning_details else None,
         )
 
         # Create Choice with correct type

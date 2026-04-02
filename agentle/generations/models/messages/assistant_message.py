@@ -43,6 +43,11 @@ class AssistantMessage(BaseModel):
         description="The reasoning behind the assistant's message.",
     )
 
+    reasoning_details: Sequence[dict[str, Any]] | None = Field(
+        default=None,
+        description="Structured reasoning details returned by providers that support preserved reasoning blocks.",
+    )
+
     def append_part(
         self,
         parts: TextPart
@@ -89,4 +94,5 @@ class AssistantMessage(BaseModel):
                 )
             ),
             reasoning=self.reasoning,
+            reasoning_details=self.reasoning_details,
         )

@@ -18,6 +18,12 @@ from rsb.models.base_model import BaseModel
 from rsb.models.field import Field
 from rsb.models.model_validator import model_validator
 
+from agentle.generations.models.generation.generation_reasoning import (
+    GenerationReasoning,
+)
+from agentle.generations.models.generation.generation_reasoning_dict import (
+    GenerationReasoningDict,
+)
 from agentle.generations.models.generation.trace_params import TraceParams
 
 
@@ -40,6 +46,7 @@ class GenerationConfig(BaseModel):
         top_k: Only sample from the top k tokens at each step.
         trace_params: Parameters for tracing the generation for observability.
         timeout: Maximum time in seconds to wait for a generation before timing out.
+        reasoning: Provider-agnostic reasoning or thinking configuration.
     """
 
     temperature: float | None = Field(
@@ -101,6 +108,11 @@ class GenerationConfig(BaseModel):
         examples=[1.0, 3.0, 6.0],
     )
 
+    reasoning: GenerationReasoning | None = Field(
+        default=None,
+        description="Provider-agnostic reasoning or thinking configuration. Providers that do not support it may ignore this field.",
+    )
+
     @model_validator(mode="after")
     def validate_timeout(self) -> Self:
         # check if all timeout fields are set. only one of them should be set.
@@ -111,6 +123,19 @@ class GenerationConfig(BaseModel):
         ):
             raise ValueError(
                 "Only one of timeout or timeout_s or timeout_m should be set."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_reasoning(self) -> Self:
+        if (
+            self.reasoning is not None
+            and self.reasoning.effort is not None
+            and self.reasoning.max_tokens is not None
+        ):
+            raise ValueError(
+                "Only one of reasoning.effort or reasoning.max_tokens should be set."
             )
 
         return self
@@ -140,6 +165,7 @@ class GenerationConfig(BaseModel):
         new_timeout: float | None = None,
         new_timeout_s: float | None = None,
         new_timeout_m: float | None = None,
+        new_reasoning: GenerationReasoning | GenerationReasoningDict | None = None,
     ) -> GenerationConfig:
         """
         Creates a new GenerationConfig with optionally updated parameters.
@@ -177,6 +203,7 @@ class GenerationConfig(BaseModel):
             timeout=new_timeout if new_timeout is not None else self.timeout,
             timeout_s=new_timeout_s if new_timeout_s is not None else self.timeout_s,
             timeout_m=new_timeout_m if new_timeout_m is not None else self.timeout_m,
+            reasoning=new_reasoning if new_reasoning is not None else self.reasoning,
         )
 
     class Config:

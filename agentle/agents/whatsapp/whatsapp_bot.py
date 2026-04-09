@@ -3734,6 +3734,27 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
             # Check if there's a message field
             if data.message:
                 msg_content = data.message
+                inline_media_base64 = msg_content.base64 or None
+
+                def log_evolution_media_transport(
+                    media_kind: str, media_url: str | None
+                ) -> None:
+                    if not media_url and inline_media_base64:
+                        logger.info(
+                            "[PARSE_EVOLUTION] %s message has inline base64 data but no URL - using base64",
+                            media_kind,
+                        )
+                    elif media_url:
+                        logger.debug(
+                            "[PARSE_EVOLUTION] %s message has URL: %s...",
+                            media_kind,
+                            media_url[:50],
+                        )
+                    else:
+                        logger.warning(
+                            "[PARSE_EVOLUTION] %s message has neither URL nor base64 data",
+                            media_kind,
+                        )
 
                 # Handle text messages
                 if msg_content.conversation:
@@ -3786,7 +3807,8 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                 elif msg_content.imageMessage:
                     logger.debug("[PARSE_EVOLUTION] Found image message")
                     image_msg = msg_content.imageMessage
-                    audio_base64 = msg_content.base64 if msg_content.base64 else None
+                    image_url = image_msg.url if image_msg.url else ""
+                    log_evolution_media_transport("Image", image_url)
 
                     return WhatsAppImageMessage(
                         id=message_id,
@@ -3796,20 +3818,22 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                         timestamp=datetime.fromtimestamp(
                             (data.messageTimestamp or 0) / 1000
                         ),
-                        media_url=image_msg.url if image_msg.url else "",
+                        media_url=image_url,
                         media_mime_type=image_msg.mimetype
                         if image_msg and image_msg.mimetype
                         else "image/jpeg",
                         caption=image_msg.caption
                         if image_msg and image_msg.caption
                         else "",
-                        base64_data=audio_base64
+                        base64_data=inline_media_base64,
                     )
 
                 # Handle document messages
                 elif msg_content.documentMessage:
                     logger.debug("[PARSE_EVOLUTION] Found document message")
                     doc_msg = msg_content.documentMessage
+                    doc_url = doc_msg.url if doc_msg else ""
+                    log_evolution_media_transport("Document", doc_url)
                     return WhatsAppDocumentMessage(
                         id=message_id,
                         from_number=from_number,
@@ -3818,7 +3842,7 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                         timestamp=datetime.fromtimestamp(
                             (data.messageTimestamp or 0) / 1000
                         ),
-                        media_url=doc_msg.url if doc_msg else "",
+                        media_url=doc_url,
                         media_mime_type=doc_msg.mimetype
                         if doc_msg and doc_msg.mimetype
                         else "application/octet-stream",
@@ -3826,6 +3850,7 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                         if doc_msg and doc_msg.fileName
                         else "",
                         caption=doc_msg.caption if doc_msg and doc_msg.caption else "",
+                        base64_data=inline_media_base64,
                     )
 
                 # Handle audio messages
@@ -3833,23 +3858,8 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                     logger.debug("[PARSE_EVOLUTION] Found audio message")
                     audio_msg = msg_content.audioMessage
 
-                    # CRITICAL FIX: Check if audio comes with base64 data instead of URL
-                    # This happens when WhatsApp sends audio directly in the webhook
                     audio_url = audio_msg.url if audio_msg else ""
-                    audio_base64 = msg_content.base64 if msg_content.base64 else None
-
-                    if not audio_url and audio_base64:
-                        logger.info(
-                            "[PARSE_EVOLUTION] 🎵 Audio message has base64 data but no URL - using base64"
-                        )
-                    elif audio_url:
-                        logger.debug(
-                            f"[PARSE_EVOLUTION] Audio message has URL: {audio_url[:50]}..."
-                        )
-                    else:
-                        logger.warning(
-                            "[PARSE_EVOLUTION] ⚠️ Audio message has neither URL nor base64 data"
-                        )
+                    log_evolution_media_transport("Audio", audio_url)
 
                     return WhatsAppAudioMessage(
                         id=message_id,
@@ -3863,11 +3873,13 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                         media_mime_type=audio_msg.mimetype
                         if audio_msg and audio_msg.mimetype
                         else "audio/ogg",
-                        base64_data=audio_base64,  # Store base64 data if available
+                        base64_data=inline_media_base64,
                     )
                 elif msg_content.videoMessage:
                     logger.debug("[PARSE_EVOLUTION] Found video message")
                     video_msg = msg_content.videoMessage
+                    video_url = video_msg.url if video_msg else ""
+                    log_evolution_media_transport("Video", video_url)
                     return WhatsAppVideoMessage(
                         id=message_id,
                         from_number=from_number,
@@ -3879,10 +3891,11 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                         timestamp=datetime.fromtimestamp(
                             (data.messageTimestamp or 0) / 1000
                         ),
-                        media_url=video_msg.url if video_msg else "",
+                        media_url=video_url,
                         media_mime_type=video_msg.mimetype
                         if video_msg and video_msg.mimetype
                         else "",
+                        base64_data=inline_media_base64,
                     )
                 else:
                     logger.warning(

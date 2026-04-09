@@ -1574,15 +1574,33 @@ class EvolutionAPIProvider(WhatsAppProvider):
                 use_message_prefix=False,
             )
 
-            payload = {"message": {"key": {"id": media_id}}}
+            payload = {"message": {"key": {"id": media_id}}, "convertToMp4": True}
 
             response_data = await self._make_request_with_resilience(
                 "POST", url, payload, expected_status=[200, 201]
             )
 
-            if "base64" not in response_data:
+            nested_data = response_data.get("data")
+            nested_mapping = nested_data if isinstance(nested_data, Mapping) else {}
+            response_keys = sorted(str(key) for key in response_data.keys())
+            nested_data_keys = sorted(str(key) for key in nested_mapping.keys())
+
+            base64_payload = response_data.get("base64") or nested_mapping.get("base64")
+            mimetype_payload = (
+                response_data.get("mimetype")
+                or nested_mapping.get("mimetype")
+                or "application/octet-stream"
+            )
+            detected_media_type = str(mimetype_payload).split("/", 1)[0].strip()
+
+            if not base64_payload:
                 logger.error(
-                    f"Media download failed: No base64 data in response for media {media_id}"
+                    "Media download failed: No base64 data in response for media %s "
+                    + "(media_type=%s, response_keys=%s, nested_data_keys=%s)",
+                    media_id,
+                    detected_media_type or "unknown",
+                    response_keys,
+                    nested_data_keys,
                 )
                 raise EvolutionAPIError(
                     "No base64 data in media response", is_retriable=False
@@ -1590,7 +1608,13 @@ class EvolutionAPIProvider(WhatsAppProvider):
 
             import base64
 
-            media_data = base64.b64decode(response_data["base64"])
+            normalized_base64_payload = str(base64_payload)
+            if ";base64," in normalized_base64_payload:
+                normalized_base64_payload = normalized_base64_payload.split(
+                    ";base64,", maxsplit=1
+                )[1]
+
+            media_data = base64.b64decode(normalized_base64_payload)
             media_size = len(media_data)
 
             logger.info(
@@ -1598,7 +1622,10 @@ class EvolutionAPIProvider(WhatsAppProvider):
                 extra={"media_id": media_id, "size_bytes": media_size},
             )
 
-            mimetype: str = response_data["mimetype"].split(";")[0].strip()
+            mimetype = str(mimetype_payload).split(";")[0].strip()
+            if not mimetype:
+                mimetype = "application/octet-stream"
+
             return DownloadedMedia(data=media_data, mime_type=mimetype)
 
         except EvolutionAPIError:

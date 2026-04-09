@@ -1548,6 +1548,28 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
 
         # CRITICAL: Store the current user message BEFORE replacing message history
         current_user_message = context.last_message
+        current_user_message_persisted = False
+
+        async def persist_current_user_message_once() -> None:
+            nonlocal current_user_message_persisted
+
+            if current_user_message_persisted or not chat_id:
+                return
+
+            assert self.conversation_store is not None
+            await self.conversation_store.add_message_async(
+                chat_id, current_user_message
+            )
+            current_user_message_persisted = True
+
+        async def persist_assistant_message(
+            message: AssistantMessage | GeneratedAssistantMessage[Any],
+        ) -> None:
+            if not chat_id:
+                return
+
+            assert self.conversation_store is not None
+            await self.conversation_store.add_message_async(chat_id, message)
 
         # Handle conversation store integration
         if chat_id:
@@ -1565,6 +1587,9 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                 )
                 # Add the current user message to the context
                 context.message_history.append(current_user_message)
+
+        # Persist the inbound turn before execution so it survives downstream failures.
+        await persist_current_user_message_once()
 
         # Start execution tracking
         context.start_execution()
@@ -1829,15 +1854,8 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                             if validated_text != final_generation.text:
                                 final_generation.update_text(validated_text)
 
-                        # Save to conversation store after successful execution
-                        if chat_id:
-                            assert self.conversation_store is not None
-                            await self.conversation_store.add_message_async(
-                                chat_id, current_user_message
-                            )
-                            await self.conversation_store.add_message_async(
-                                chat_id, final_generation.message
-                            )
+                        # Save assistant output after successful execution.
+                        await persist_assistant_message(final_generation.message)
 
                         # Yield final chunk
                         yield AgentRunOutput(
@@ -1949,15 +1967,8 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                 if validated_text != generation.text:
                     generation.update_text(validated_text)
 
-            # Save to conversation store after successful execution
-            if chat_id:
-                assert self.conversation_store is not None
-                await self.conversation_store.add_message_async(
-                    chat_id, current_user_message
-                )
-                await self.conversation_store.add_message_async(
-                    chat_id, generation.message
-                )
+            # Save assistant output after successful execution.
+            await persist_assistant_message(generation.message)
 
             return AgentRunOutput(
                 generation=generation,
@@ -2279,16 +2290,10 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                                     ),
                                 )
 
-                                # Save to conversation store after successful execution
-                                if chat_id:
-                                    assert self.conversation_store is not None
-                                    await self.conversation_store.add_message_async(
-                                        chat_id, current_user_message
-                                    )
-                                    await self.conversation_store.add_message_async(
-                                        chat_id,
-                                        final_generation.message,
-                                    )
+                                # Save assistant output after successful execution.
+                                await persist_assistant_message(
+                                    final_generation.message
+                                )
 
                                 # Yield final result
                                 yield self._build_agent_run_output(
@@ -2385,16 +2390,10 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                             ),
                         )
 
-                        # Save to conversation store after successful execution
-                        if chat_id:
-                            assert self.conversation_store is not None
-                            await self.conversation_store.add_message_async(
-                                chat_id, current_user_message
-                            )
-                            await self.conversation_store.add_message_async(
-                                chat_id,
-                                final_tool_generation.message,
-                            )
+                        # Save assistant output after successful execution.
+                        await persist_assistant_message(
+                            final_tool_generation.message
+                        )
 
                         # Yield final result
                         yield self._build_agent_run_output(
@@ -3123,16 +3122,8 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                         ),
                     )
 
-                    # Save to conversation store after successful execution
-                    if chat_id:
-                        assert self.conversation_store is not None
-                        # Add the current user message and AI response to conversation store
-                        await self.conversation_store.add_message_async(
-                            chat_id, current_user_message
-                        )
-                        await self.conversation_store.add_message_async(
-                            chat_id, generation.message
-                        )
+                    # Save assistant output after successful execution.
+                    await persist_assistant_message(generation.message)
 
                     return self._build_agent_run_output(
                         context=context,
@@ -3206,16 +3197,8 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                     ),
                 )
 
-                # Save to conversation store after successful execution
-                if chat_id:
-                    assert self.conversation_store is not None
-                    # Add the current user message and AI response to conversation store
-                    await self.conversation_store.add_message_async(
-                        chat_id, current_user_message
-                    )
-                    await self.conversation_store.add_message_async(
-                        chat_id, tool_call_generation.message
-                    )
+                # Save assistant output after successful execution.
+                await persist_assistant_message(tool_call_generation.message)
 
                 return self._build_agent_run_output(
                     generation=cast(Generation[T_Schema], tool_call_generation),

@@ -129,6 +129,23 @@ class CallbackWithContext:
     )
 
     context: dict[str, Any] = field(default_factory=dict)
+    scope_key: str | None = None
+    persistent: bool = True
+
+
+@dataclass(frozen=True)
+class QueuedMessageResult:
+    """Represents a webhook/message accepted for asynchronous batch processing."""
+
+    phone_number: PhoneNumber
+    chat_id: ChatId | None = None
+    pending_messages: int = 0
+    processing_token: str | None = None
+    status: str = "queued"
+    reason: str = "message_batched"
+
+
+type MessageHandlingResult = GeneratedAssistantMessage[Any] | QueuedMessageResult | None
 
 
 class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseModel):
@@ -247,6 +264,62 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                 "[DELAY_CONFIG] To enable delays, set enable_human_delays=True in WhatsAppBotConfig"
             )
 
+    @staticmethod
+    def _build_callback_scope_key(
+        *,
+        chat_id: ChatId | None = None,
+        phone_number: PhoneNumber | None = None,
+    ) -> str | None:
+        if chat_id:
+            return f"chat:{chat_id}"
+        if phone_number:
+            return f"phone:{phone_number}"
+        return None
+
+    @staticmethod
+    def _describe_message_handling_result(response: MessageHandlingResult) -> str:
+        if isinstance(response, QueuedMessageResult):
+            return response.status
+        if response is not None:
+            return "completed"
+        return "no_response"
+
+    def _register_response_callback(
+        self,
+        *,
+        callback: CallbackFunction,
+        context: dict[str, Any] | None,
+        allow_duplicates: bool,
+        scope_key: str | None,
+        persistent: bool,
+    ) -> bool:
+        normalized_context = dict(context or {})
+        callback_with_context = CallbackWithContext(
+            callback=callback,
+            context=normalized_context,
+            scope_key=scope_key,
+            persistent=persistent,
+        )
+
+        if not allow_duplicates:
+            callback_exists = any(
+                existing.callback == callback
+                and existing.context == normalized_context
+                and existing.scope_key == scope_key
+                and existing.persistent == persistent
+                for existing in self._response_callbacks
+            )
+            if callback_exists:
+                logger.warning(
+                    "[CALLBACKS] ⚠️ Duplicate callback registration prevented for %s (scope=%s)",
+                    callback.__name__ if hasattr(callback, "__name__") else "unnamed",
+                    scope_key or "<global>",
+                )
+                return False
+
+        self._response_callbacks.append(callback_with_context)
+        return True
+
     def start(self) -> None:
         """Start the WhatsApp bot."""
         run_sync(self.start_async)
@@ -304,7 +377,7 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
 
     async def handle_message(
         self, message: WhatsAppMessage, chat_id: ChatId | None = None
-    ) -> GeneratedAssistantMessage[Any] | None:
+    ) -> MessageHandlingResult:
         """
         Handle incoming WhatsApp message with enhanced error handling and batching.
 
@@ -575,7 +648,8 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                 )
 
             logger.info(
-                f"[MESSAGE_HANDLER] ✅ Message handling completed. Response generated: {response is not None}"
+                "[MESSAGE_HANDLER] ✅ Message handling completed. Result status: %s",
+                self._describe_message_handling_result(response),
             )
             return response
 
@@ -609,7 +683,7 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
         callback: CallbackInput = None,
         callback_context: dict[str, Any] | None = None,
         chat_id: ChatId | None = None,
-    ) -> GeneratedAssistantMessage[Any] | None:
+    ) -> MessageHandlingResult:
         """
         Handle incoming webhook from WhatsApp.
         """
@@ -623,10 +697,8 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
             f"[WEBHOOK] Current response callbacks count: {len(self._response_callbacks)}"
         )
 
-        # FOR BATCHING: Register callback(s) permanently, don't remove them in finally block
-        # The batch processor will call them when the batch is processed
         if callback:
-            logger.info("[WEBHOOK] Processing callback registration for batching...")
+            logger.info("[WEBHOOK] Processing scoped callback registration...")
 
             # Handle both single callback and list of callbacks
             callbacks_to_register: list[CallbackFunction]
@@ -635,35 +707,35 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
             else:
                 callbacks_to_register = [callback]
 
+            callback_scope_key = self._build_callback_scope_key(
+                chat_id=chat_id,
+                phone_number=getattr(payload, "phone_number_id", None),
+            )
+
             logger.info(
-                f"[WEBHOOK] Registering {len(callbacks_to_register)} callback(s)"
+                "[WEBHOOK] Registering %s callback(s) for scope=%s",
+                len(callbacks_to_register),
+                callback_scope_key or "<global>",
             )
 
             for i, cb in enumerate(callbacks_to_register):
-                callback_with_context = CallbackWithContext(
-                    callback=cb, context=callback_context or {}
+                added = self._register_response_callback(
+                    callback=cb,
+                    context=callback_context,
+                    allow_duplicates=False,
+                    scope_key=callback_scope_key,
+                    persistent=False,
                 )
 
-                # Check if this exact callback is already registered to avoid duplicates
-                callback_exists = any(
-                    existing.callback == cb and existing.context == callback_context
-                    for existing in self._response_callbacks
-                )
-
-                logger.info(
-                    f"[WEBHOOK] Callback {i + 1} already exists: {callback_exists}"
-                )
-
-                if not callback_exists:
-                    self._response_callbacks.append(callback_with_context)
+                if added:
                     logger.info(
-                        f"[WEBHOOK] ✅ Added callback {i + 1} for batching. Total callbacks: {len(self._response_callbacks)}"
+                        f"[WEBHOOK] ✅ Added callback {i + 1} for deferred processing. Total callbacks: {len(self._response_callbacks)}"
                     )
                 else:
                     logger.warning(f"[WEBHOOK] ⚠️ Duplicate callback {i + 1} not added")
 
             logger.info(
-                "[WEBHOOK] ⚠️  IMPORTANT: Callback(s) will be called when batch is processed, not removed immediately"
+                "[WEBHOOK] Callback(s) scoped to this webhook will be removed after completion or failure"
             )
 
         try:
@@ -678,7 +750,8 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                 logger.info("[WEBHOOK] 🔄 Handling messages.upsert event")
                 response = await self._handle_message_upsert(payload, chat_id=chat_id)
                 logger.info(
-                    f"[WEBHOOK] Message upsert response: {response is not None}"
+                    "[WEBHOOK] Message upsert result status: %s",
+                    self._describe_message_handling_result(response),
                 )
             elif payload.event == "messages.update":
                 logger.info("[WEBHOOK] 🔄 Handling messages.update event")
@@ -690,7 +763,10 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
             elif payload.entry:
                 logger.info("[WEBHOOK] 🔄 Handling Meta API webhook")
                 response = await self._handle_meta_webhook(payload)
-                logger.info(f"[WEBHOOK] Meta webhook response: {response is not None}")
+                logger.info(
+                    "[WEBHOOK] Meta webhook result status: %s",
+                    self._describe_message_handling_result(response),
+                )
 
             # Call custom handlers
             logger.info(
@@ -703,7 +779,8 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                 await handler(payload)
 
             logger.info(
-                f"[WEBHOOK] ✅ Webhook processing completed. Response generated: {response is not None}"
+                "[WEBHOOK] ✅ Webhook processing completed. Result status: %s",
+                self._describe_message_handling_result(response),
             )
             return response
 
@@ -713,10 +790,8 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
             )
             return None
         finally:
-            # FOR BATCHING: DON'T remove the callback here since batch processing is asynchronous
-            # The callback will be called later when the batch is processed
             logger.info(
-                "[WEBHOOK] ℹ️  Callback will remain registered for batch processing"
+                "[WEBHOOK] ℹ️  Scoped callbacks remain registered only until their correlated processing finishes"
             )
             logger.info(
                 f"[WEBHOOK] Current callbacks after webhook: {len(self._response_callbacks)}"
@@ -838,6 +913,10 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
         ),
         context: dict[str, Any] | None = None,
         allow_duplicates: bool = False,
+        *,
+        chat_id: ChatId | None = None,
+        phone_number: PhoneNumber | None = None,
+        persistent: bool = True,
     ) -> None:
         """Add callback to be called when a response is generated."""
         logger.info("[ADD_CALLBACK] ═══════════ ADDING RESPONSE CALLBACK ═══════════")
@@ -846,30 +925,27 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
         )
         logger.info(f"[ADD_CALLBACK] Context provided: {context is not None}")
         logger.info(f"[ADD_CALLBACK] Allow duplicates: {allow_duplicates}")
+        logger.info(f"[ADD_CALLBACK] Persistent: {persistent}")
         logger.info(
             f"[ADD_CALLBACK] Current callbacks count: {len(self._response_callbacks)}"
         )
 
-        callback_with_context = CallbackWithContext(
-            callback=callback, context=context or {}
+        scope_key = self._build_callback_scope_key(
+            chat_id=chat_id,
+            phone_number=phone_number,
         )
 
-        if not allow_duplicates:
-            # Check if this exact callback+context combination already exists
-            callback_exists = any(
-                existing.callback == callback and existing.context == context
-                for existing in self._response_callbacks
+        added = self._register_response_callback(
+            callback=callback,
+            context=context,
+            allow_duplicates=allow_duplicates,
+            scope_key=scope_key,
+            persistent=persistent,
+        )
+        if added:
+            logger.info(
+                f"[ADD_CALLBACK] ✅ Callback added successfully. Total callbacks: {len(self._response_callbacks)}"
             )
-            if callback_exists:
-                logger.warning(
-                    f"[ADD_CALLBACK] ⚠️ Duplicate callback registration prevented for {callback.__name__ if hasattr(callback, '__name__') else 'unnamed'}"
-                )
-                return
-
-        self._response_callbacks.append(callback_with_context)
-        logger.info(
-            f"[ADD_CALLBACK] ✅ Callback added successfully. Total callbacks: {len(self._response_callbacks)}"
-        )
         logger.info("[ADD_CALLBACK] ═══════════ CALLBACK ADDED ═══════════")
 
     def remove_response_callback(
@@ -895,6 +971,9 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
             ]
         ),
         context: dict[str, Any] | None = None,
+        *,
+        chat_id: ChatId | None = None,
+        phone_number: PhoneNumber | None = None,
     ) -> bool:
         """Remove a specific callback from the registered callbacks."""
         logger.info(
@@ -908,8 +987,19 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
             f"[REMOVE_CALLBACK] Current callbacks count: {len(self._response_callbacks)}"
         )
 
+        scope_key = self._build_callback_scope_key(
+            chat_id=chat_id,
+            phone_number=phone_number,
+        )
+
+        normalized_context = dict(context or {})
+
         for i, existing in enumerate(self._response_callbacks):
-            if existing.callback == callback and existing.context == context:
+            if (
+                existing.callback == callback
+                and existing.context == normalized_context
+                and (scope_key is None or existing.scope_key == scope_key)
+            ):
                 self._response_callbacks.pop(i)
                 logger.info(
                     f"[REMOVE_CALLBACK] ✅ Callback removed successfully. Remaining callbacks: {len(self._response_callbacks)}"
@@ -992,7 +1082,7 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
         message: WhatsAppMessage,
         session: WhatsAppSession,
         chat_id: ChatId | None = None,
-    ) -> GeneratedAssistantMessage[Any] | None:
+    ) -> GeneratedAssistantMessage[Any] | QueuedMessageResult | None:
         """Handle message with improved batching logic and atomic state management."""
         phone_number = message.from_number
 
@@ -1145,9 +1235,18 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                         f"[BATCHING] Existing processor active: {phone_number in self._batch_processors}"
                     )
 
-                # Return None for batched messages since they're processed asynchronously
-                logger.info("[BATCHING] Returning None (batched processing)")
-                return None
+                queued_result = QueuedMessageResult(
+                    phone_number=phone_number,
+                    chat_id=chat_id,
+                    pending_messages=len(updated_session.pending_messages),
+                    processing_token=updated_session.processing_token,
+                )
+                logger.info(
+                    "[BATCHING] Returning queued result (pending_messages=%s, token=%s)",
+                    queued_result.pending_messages,
+                    queued_result.processing_token,
+                )
+                return queued_result
 
         except Exception as e:
             logger.error(
@@ -1591,6 +1690,7 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 chat_id=chat_id,
+                processing_status="completed",
             )
             return response
 
@@ -1621,6 +1721,7 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                 input_tokens=0,
                 output_tokens=0,
                 chat_id=chat_id,
+                processing_status="failed",
             )
             raise
 
@@ -1696,6 +1797,7 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 chat_id=chat_id,
+                processing_status="completed",
             )
             logger.info(
                 f"[SINGLE_MESSAGE] ✅ Response callbacks completed for {message.from_number}"
@@ -1719,6 +1821,7 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                 input_tokens=0,
                 output_tokens=0,
                 chat_id=chat_id,
+                processing_status="failed",
             )
             logger.info("[SINGLE_MESSAGE] ✅ Error response callbacks completed")
             raise
@@ -1874,27 +1977,41 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
         output_tokens: float,
         *,
         chat_id: ChatId | None = None,
+        processing_status: str = "completed",
     ) -> None:
         """Call all registered response callbacks with (phone_number, chat_id, response, context)."""
         logger.info("[CALLBACKS] ═══════════ CALLING RESPONSE CALLBACKS ═══════════")
         logger.info(f"[CALLBACKS] Phone number: {phone_number}")
         logger.info(f"[CALLBACKS] Response provided: {response is not None}")
         logger.info(f"[CALLBACKS] chat_id: {chat_id}")
+        logger.info(f"[CALLBACKS] Processing status: {processing_status}")
+
+        scope_key = self._build_callback_scope_key(
+            chat_id=chat_id,
+            phone_number=phone_number,
+        )
+        callbacks_to_call = [
+            cb
+            for cb in self._response_callbacks
+            if cb.scope_key is None or cb.scope_key == scope_key
+        ]
         logger.info(
-            f"[CALLBACKS] Total callbacks to call: {len(self._response_callbacks)}"
+            f"[CALLBACKS] Total callbacks to call: {len(callbacks_to_call)}"
         )
 
         if response:
             logger.info(f"[CALLBACKS] Response text length: {len(response.text)}")
             logger.debug(f"[CALLBACKS] Response text preview: {response.text[:100]}...")
 
-        if not self._response_callbacks:
+        if not callbacks_to_call:
             logger.warning("[CALLBACKS] ⚠️ No callbacks registered to call!")
             return
 
-        for i, cb in enumerate(self._response_callbacks):
+        callbacks_to_remove: list[CallbackWithContext] = []
+
+        for i, cb in enumerate(callbacks_to_call):
             logger.info(
-                f"[CALLBACKS] 🔄 Calling callback {i + 1}/{len(self._response_callbacks)}"
+                f"[CALLBACKS] 🔄 Calling callback {i + 1}/{len(callbacks_to_call)}"
             )
             logger.info(
                 f"[CALLBACKS] Callback function: {getattr(cb.callback, '__name__', 'unnamed')}"
@@ -1903,23 +2020,43 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                 f"[CALLBACKS] Callback context keys: {list(cb.context.keys()) if cb.context else 'None'}"
             )
 
-            cb.context.update(
-                {"input_tokens": input_tokens, "output_tokens": output_tokens}
+            callback_context = dict(cb.context)
+            callback_context.update(
+                {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "processing_status": processing_status,
+                }
             )
 
             try:
                 if inspect.iscoroutinefunction(cb.callback):
-                    await cb.callback(phone_number, chat_id, response, cb.context)
+                    await cb.callback(phone_number, chat_id, response, callback_context)
                 else:
-                    cb.callback(phone_number, chat_id, response, cb.context)
+                    cb.callback(phone_number, chat_id, response, callback_context)
             except Exception as e:
                 logger.error(
                     f"[CALLBACKS] ❌ Error calling callback {i + 1} for {phone_number}: {e}",
                     exc_info=True,
                 )
+            finally:
+                if not cb.persistent:
+                    callbacks_to_remove.append(cb)
+
+        if callbacks_to_remove:
+            self._response_callbacks = [
+                existing
+                for existing in self._response_callbacks
+                if existing not in callbacks_to_remove
+            ]
+            logger.info(
+                "[CALLBACKS] Removed %s one-shot callback(s). Remaining=%s",
+                len(callbacks_to_remove),
+                len(self._response_callbacks),
+            )
 
         logger.info(
-            f"[CALLBACKS] ✅ All {len(self._response_callbacks)} callbacks processed"
+            f"[CALLBACKS] ✅ All {len(callbacks_to_call)} callbacks processed"
         )
         logger.info("[CALLBACKS] ═══════════ CALLBACKS COMPLETE ═══════════")
 
@@ -3454,7 +3591,7 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
 
     async def _handle_message_upsert(
         self, payload: WhatsAppWebhookPayload, chat_id: ChatId | None = None
-    ) -> GeneratedAssistantMessage[Any] | None:
+    ) -> MessageHandlingResult:
         """Handle new message event."""
         logger.info("[MESSAGE_UPSERT] ═══════════ MESSAGE UPSERT START ═══════════")
         logger.debug("[MESSAGE_UPSERT] Processing message upsert event")
@@ -3510,7 +3647,8 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                 result = await self.handle_message(message, chat_id=chat_id)
 
                 logger.info(
-                    f"[MESSAGE_UPSERT] ✅ handle_message completed. Result: {result is not None}"
+                    "[MESSAGE_UPSERT] ✅ handle_message completed. Result status: %s",
+                    self._describe_message_handling_result(result),
                 )
                 return result
             else:

@@ -762,7 +762,7 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
             # Handle Meta API events
             elif payload.entry:
                 logger.info("[WEBHOOK] 🔄 Handling Meta API webhook")
-                response = await self._handle_meta_webhook(payload)
+                response = await self._handle_meta_webhook(payload, chat_id=chat_id)
                 logger.info(
                     "[WEBHOOK] Meta webhook result status: %s",
                     self._describe_message_handling_result(response),
@@ -3923,7 +3923,7 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
         return None
 
     async def _handle_meta_webhook(
-        self, payload: WhatsAppWebhookPayload
+        self, payload: WhatsAppWebhookPayload, chat_id: ChatId | None = None
     ) -> GeneratedAssistantMessage[Any] | None:
         """Handle Meta WhatsApp Business API webhooks."""
         logger.debug("[META_WEBHOOK] Processing Meta webhook")
@@ -3943,6 +3943,26 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
 
                     if field == "messages":
                         logger.debug("[META_WEBHOOK] Processing messages field")
+                        metadata = value.get("metadata", {}) or {}
+                        phone_number_id = metadata.get("phone_number_id")
+                        if (
+                            phone_number_id
+                            and phone_number_id != self.provider.get_instance_identifier()
+                        ):
+                            logger.debug(
+                                "[META_WEBHOOK] Skipping messages for phone_number_id=%s",
+                                phone_number_id,
+                            )
+                            continue
+
+                        contact_names = {
+                            str(contact.get("wa_id")): (
+                                (contact.get("profile") or {}).get("name")
+                            )
+                            for contact in value.get("contacts", [])
+                            if contact.get("wa_id")
+                        }
+
                         # Process incoming messages
                         messages = value.get("messages", [])
                         for msg_data in messages:
@@ -3954,13 +3974,19 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                                 logger.debug("[META_WEBHOOK] Skipping outgoing message")
                                 continue
 
-                            message = await self._parse_meta_message(msg_data)
+                            message = await self._parse_meta_message(
+                                msg_data,
+                                push_name=contact_names.get(str(msg_data.get("from"))),
+                                phone_number_id=phone_number_id,
+                            )
                             if message:
                                 logger.info(
                                     f"[META_WEBHOOK] Parsed message: {message.id} from {message.from_number}"
                                 )
                                 # Return the response from the last processed message
-                                response = await self.handle_message(message)
+                                response = await self.handle_message(
+                                    message, chat_id=chat_id
+                                )
 
             return response
 
@@ -3971,7 +3997,10 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
             return None
 
     async def _parse_meta_message(
-        self, msg_data: dict[str, Any]
+        self,
+        msg_data: dict[str, Any],
+        push_name: str | None = None,
+        phone_number_id: str | None = None,
     ) -> WhatsAppMessage | None:
         """Parse Meta API message format."""
         logger.debug("[PARSE_META] Parsing Meta API message")
@@ -4005,10 +4034,15 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                 return WhatsAppTextMessage(
                     id=message_id,
                     from_number=from_number,
-                    push_name=msg_data.get("pushName", "user"),
+                    push_name=push_name or msg_data.get("pushName") or "user",
                     to_number=self.provider.get_instance_identifier(),
                     timestamp=timestamp,
                     text=text,
+                    metadata={
+                        "provider": "whatsapp_cloud",
+                        "phone_number_id": phone_number_id
+                        or self.provider.get_instance_identifier(),
+                    },
                 )
 
             elif msg_type == "image":
@@ -4017,12 +4051,18 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                 return WhatsAppImageMessage(
                     id=message_id,
                     from_number=from_number,
-                    push_name=msg_data.get("pushName", "user"),
+                    push_name=push_name or msg_data.get("pushName") or "user",
                     to_number=self.provider.get_instance_identifier(),
                     timestamp=timestamp,
                     media_url=image_data.get("id", ""),  # Meta uses ID for media
                     media_mime_type=image_data.get("mime_type", "image/jpeg"),
                     caption=image_data.get("caption"),
+                    metadata={
+                        "provider": "whatsapp_cloud",
+                        "phone_number_id": phone_number_id
+                        or self.provider.get_instance_identifier(),
+                        "media_id": image_data.get("id"),
+                    },
                 )
 
             elif msg_type == "document":
@@ -4031,7 +4071,7 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                 return WhatsAppDocumentMessage(
                     id=message_id,
                     from_number=from_number,
-                    push_name=msg_data.get("pushName", "user"),
+                    push_name=push_name or msg_data.get("pushName") or "user",
                     to_number=self.provider.get_instance_identifier(),
                     timestamp=timestamp,
                     media_url=doc_data.get("id", ""),  # Meta uses ID for media
@@ -4040,6 +4080,12 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                     ),
                     filename=doc_data.get("filename"),
                     caption=doc_data.get("caption"),
+                    metadata={
+                        "provider": "whatsapp_cloud",
+                        "phone_number_id": phone_number_id
+                        or self.provider.get_instance_identifier(),
+                        "media_id": doc_data.get("id"),
+                    },
                 )
 
             elif msg_type == "audio":
@@ -4048,11 +4094,17 @@ class WhatsAppBot[T_Schema: WhatsAppResponseBase = WhatsAppResponseBase](BaseMod
                 return WhatsAppAudioMessage(
                     id=message_id,
                     from_number=from_number,
-                    push_name=msg_data.get("pushName", "user"),
+                    push_name=push_name or msg_data.get("pushName") or "user",
                     to_number=self.provider.get_instance_identifier(),
                     timestamp=timestamp,
                     media_url=audio_data.get("id", ""),  # Meta uses ID for media
                     media_mime_type=audio_data.get("mime_type", "audio/ogg"),
+                    metadata={
+                        "provider": "whatsapp_cloud",
+                        "phone_number_id": phone_number_id
+                        or self.provider.get_instance_identifier(),
+                        "media_id": audio_data.get("id"),
+                    },
                 )
 
         except Exception as e:

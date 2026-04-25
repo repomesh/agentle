@@ -285,6 +285,13 @@ class MetaWhatsAppProvider(WhatsAppProvider):
     async def initialize(self) -> None:
         """Initialize the Meta WhatsApp Business API connection."""
         try:
+            if not self.config.business_account_id:
+                logger.info(
+                    "Meta WhatsApp provider initialized for phone ID %s without business account validation",
+                    self.config.phone_number_id,
+                )
+                return
+
             # Verify access token by getting business account info
             url = self._build_url(f"{self.config.business_account_id}")
             response_data = await self._make_request("GET", url)
@@ -458,24 +465,14 @@ class MetaWhatsAppProvider(WhatsAppProvider):
             raise MetaWhatsAppError(f"Failed to upload media: {e}")
 
     async def send_typing_indicator(self, to: str, duration: int = 3) -> None:
-        """Send typing indicator via Meta WhatsApp Business API."""
-        try:
-            payload = {
-                "messaging_product": "whatsapp",
-                "to": self._normalize_phone(to),
-                "type": "typing",
-            }
+        """Typing indicators are optional in the official provider flow."""
+        logger.debug("Skipping Meta typing indicator for %s during %ss", to, duration)
 
-            url = self._build_url(f"{self.config.phone_number_id}/messages")
-            await self._make_request("POST", url, payload)
-
-            logger.debug(f"Typing indicator sent to {to}")
-
-        except MetaWhatsAppError as e:
-            # Typing indicator failures are non-critical
-            logger.warning(f"Failed to send typing indicator: {e}")
-        except Exception as e:
-            logger.warning(f"Failed to send typing indicator: {e}")
+    async def send_recording_indicator(self, to: str, duration: int = 3) -> None:
+        """Recording indicators are optional in the official provider flow."""
+        logger.debug(
+            "Skipping Meta recording indicator for %s during %ss", to, duration
+        )
 
     async def mark_message_as_read(self, message_id: str) -> None:
         """Mark a message as read via Meta WhatsApp Business API."""
@@ -572,32 +569,31 @@ class MetaWhatsAppProvider(WhatsAppProvider):
 
     @override
     async def validate_webhook(self, payload: WhatsAppWebhookPayload) -> None:
-        """Process incoming webhook data from Meta WhatsApp Business API."""
+        """Validate incoming webhook data from Meta WhatsApp Business API."""
         try:
-            # Verify webhook signature if needed
-            # TODO(arthur): verify the webhook signature
-
             # Meta webhook structure validation
             entry = payload.entry
             if not entry:
                 raise MetaWhatsAppError("No entry data in webhook payload")
 
-            # Process each entry
+            phone_number_ids: set[str] = set()
             for entry_item in entry:
                 changes = entry_item.get("changes", [])
-                if not changes:
-                    continue
-
                 for change in changes:
-                    field = change.get("field")
                     value = change.get("value", {})
+                    metadata = value.get("metadata") or {}
+                    phone_number_id = metadata.get("phone_number_id")
+                    if phone_number_id:
+                        phone_number_ids.add(str(phone_number_id))
 
-                    if field == "messages":
-                        # Process incoming messages
-                        await self._process_messages_webhook(value)
-                    elif field == "message_status":
-                        # Process message status updates
-                        await self._process_status_webhook(value)
+            if (
+                phone_number_ids
+                and self.config.phone_number_id
+                and self.config.phone_number_id not in phone_number_ids
+            ):
+                raise MetaWhatsAppError(
+                    "Webhook phone_number_id does not match provider phone_number_id"
+                )
 
             logger.debug(f"Processed webhook for phone {self.config.phone_number_id}")
 
@@ -799,20 +795,7 @@ class MetaWhatsAppProvider(WhatsAppProvider):
 
         Meta expects phone numbers in international format without + prefix.
         """
-        # Remove non-numeric characters
-        phone = "".join(c for c in phone if c.isdigit())
-
-        # Remove leading + if present
-        if phone.startswith("+"):
-            phone = phone[1:]
-
-        # Ensure country code is present # TODO(arthur): change this logic
-        if len(phone) <= 10:  # Assuming it's missing country code
-            phone = (
-                "1" + phone
-            )  # Default to US country code # TODO(arthur): change this logic
-
-        return phone
+        return "".join(c for c in phone if c.isdigit())
 
     def get_stats(self) -> Mapping[str, Any]:
         """

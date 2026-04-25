@@ -795,7 +795,14 @@ class MetaWhatsAppProvider(WhatsAppProvider):
 
         Meta expects phone numbers in international format without + prefix.
         """
-        return "".join(c for c in phone if c.isdigit())
+        normalized = "".join(c for c in phone if c.isdigit())
+
+        # Brazil mobile numbers can arrive from Meta webhooks as the WA ID without
+        # the ninth digit, while test recipients are registered with it.
+        if normalized.startswith("55") and len(normalized) == 12:
+            return normalized[:4] + "9" + normalized[4:]
+
+        return normalized
 
     def get_stats(self) -> Mapping[str, Any]:
         """

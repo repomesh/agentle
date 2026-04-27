@@ -46,6 +46,7 @@ class WhatsAppCloudProvider:
     session_manager: SessionManager[ChannelSession]
     session_ttl_seconds: int
     _session: aiohttp.ClientSession | None
+    _owns_session_manager: bool
 
     def __init__(
         self,
@@ -56,6 +57,7 @@ class WhatsAppCloudProvider:
         self.config = config
         self.session_ttl_seconds = session_ttl_seconds
         self._session = None
+        self._owns_session_manager = session_manager is None
         self.session_manager = session_manager or SessionManager(
             session_store=InMemorySessionStore[ChannelSession](),
             default_ttl_seconds=session_ttl_seconds,
@@ -101,7 +103,8 @@ class WhatsAppCloudProvider:
         if self._session:
             await self._session.close()
             self._session = None
-        await self.session_manager.close()
+        if self._owns_session_manager:
+            await self.session_manager.close()
 
     def _build_url(self, endpoint: str) -> str:
         return urljoin(self.config.base_url, f"/{self.config.api_version}/{endpoint}")

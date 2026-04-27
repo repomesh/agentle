@@ -158,14 +158,14 @@ class ChannelBot(Generic[T_Schema]):
                 self.add_response_callback(
                     callback_function,
                     context=callback_context,
-                    chat_id=chat_id,
-                    contact_identifier=message.sender_id,
+                    contact_identifier=message.contact_identifier,
                     persistent=False,
                 )
 
-        session = await self.provider.get_session(message.sender_id)
+        contact_identifier = message.contact_identifier
+        session = await self.provider.get_session(contact_identifier)
         if session is None:
-            logger.error("Failed to create channel session for %s", message.sender_id)
+            logger.error("Failed to create channel session for %s", contact_identifier)
             return None
 
         if self.config.spam_protection_enabled and not session.update_rate_limiting(
@@ -201,7 +201,7 @@ class ChannelBot(Generic[T_Schema]):
         *,
         chat_id: str,
     ) -> QueuedChannelMessageResult | None:
-        contact_identifier = message.sender_id
+        contact_identifier = message.contact_identifier
         lock = self._processing_locks.setdefault(contact_identifier, asyncio.Lock())
 
         async with lock:
@@ -280,13 +280,19 @@ class ChannelBot(Generic[T_Schema]):
         output_tokens = 0
         try:
             agent_input = await self._messages_to_user_input(messages)
+            await self._send_typing_indicator_if_supported(session.contact_identifier)
             response, input_tokens, output_tokens = await self._process_with_agent(
                 agent_input,
                 session,
                 chat_id=chat_id,
             )
             if response:
-                reply_to = messages[-1].id if self.config.quote_messages else None
+                reply_to = (
+                    messages[-1].id
+                    if self.config.quote_messages
+                    and self.provider.capabilities.supports_quoting
+                    else None
+                )
                 await self._send_response(session.contact_identifier, response, reply_to)
             session.message_count += len(messages)
             session.finish_batch_processing(token)
@@ -321,20 +327,27 @@ class ChannelBot(Generic[T_Schema]):
         *,
         chat_id: str,
     ) -> GeneratedAssistantMessage[Any] | None:
+        contact_identifier = message.contact_identifier
         try:
             agent_input = await self._messages_to_user_input([message])
+            await self._send_typing_indicator_if_supported(contact_identifier)
             response, input_tokens, output_tokens = await self._process_with_agent(
                 agent_input,
                 session,
                 chat_id=chat_id,
             )
             if response:
-                reply_to = message.id if self.config.quote_messages else None
-                await self._send_response(message.sender_id, response, reply_to)
+                reply_to = (
+                    message.id
+                    if self.config.quote_messages
+                    and self.provider.capabilities.supports_quoting
+                    else None
+                )
+                await self._send_response(contact_identifier, response, reply_to)
             session.message_count += 1
             await self.provider.update_session(session)
             await self._call_response_callbacks(
-                message.sender_id,
+                contact_identifier,
                 response,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
@@ -345,7 +358,7 @@ class ChannelBot(Generic[T_Schema]):
         except Exception:
             logger.exception("Failed to process channel message")
             await self._call_response_callbacks(
-                message.sender_id,
+                contact_identifier,
                 None,
                 input_tokens=0,
                 output_tokens=0,
@@ -420,6 +433,20 @@ class ChannelBot(Generic[T_Schema]):
             await self.provider.send_text_message(recipient, part, reply_to)
             reply_to = None
 
+    async def _send_typing_indicator_if_supported(self, recipient: str) -> None:
+        if (
+            not self.config.typing_indicator
+            or not self.provider.capabilities.supports_typing_indicator
+        ):
+            return
+        try:
+            await self.provider.send_typing_indicator(
+                recipient,
+                self.config.typing_duration,
+            )
+        except Exception:
+            logger.exception("Failed to send channel typing indicator")
+
     def _split_response(self, text: str) -> list[str]:
         limit = max(1, int(self.config.max_message_length or 4096))
         if len(text) <= limit:
@@ -442,10 +469,13 @@ class ChannelBot(Generic[T_Schema]):
             chat_id=chat_id,
             contact_identifier=contact_identifier,
         )
+        contact_scope_key = self._callback_scope_key(contact_identifier=contact_identifier)
         callbacks = [
             callback
             for callback in self._response_callbacks
-            if callback.scope_key is None or callback.scope_key == scope_key
+            if callback.scope_key is None
+            or callback.scope_key == scope_key
+            or callback.scope_key == contact_scope_key
         ]
         callbacks_to_remove: list[CallbackWithContext] = []
 

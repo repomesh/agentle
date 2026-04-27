@@ -38,11 +38,6 @@ class ChannelSession(BaseModel):
     processing_token: str | None = None
     last_state_change: datetime = Field(default_factory=datetime.now)
 
-    @property
-    def phone_number(self) -> str:
-        """Temporary compatibility alias for callback/log consumers."""
-        return self.contact_identifier
-
     def add_pending_message(self, message_data: dict[str, Any]) -> None:
         now = datetime.now()
         self.pending_messages.append(message_data)

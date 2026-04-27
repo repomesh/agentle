@@ -1,6 +1,6 @@
 [project]
 name = "agentle"
-version = "v0.9.57"
+version = "v0.9.58"
 description = "..."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -23,9 +23,7 @@ packages = ["agentle"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
-markers = [
-    "stress: opt-in stress tests for high-concurrency and load scenarios",
-]
+markers = ["stress: opt-in stress tests for high-concurrency and load scenarios"]
 
 [dependency-groups]
 cache = ["aiocache>=0.12.3"]

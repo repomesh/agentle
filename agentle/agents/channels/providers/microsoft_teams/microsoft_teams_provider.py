@@ -326,11 +326,21 @@ class MicrosoftTeamsProvider:
             contact_identifier=normalized,
             context_data={"teams_reference": reference} if reference else {},
         )
-        await self.session_manager.create_session(
+        created = await self.session_manager.create_session(
             session_id,
             session,
             ttl_seconds=self.session_ttl_seconds,
         )
+        if not created:
+            existing = await self.session_manager.get_session(
+                session_id, refresh_ttl=True
+            )
+            if existing is not None:
+                existing.last_activity = datetime.now()
+                if reference:
+                    existing.context_data["teams_reference"] = reference
+                await self.session_manager.update_session(session_id, existing)
+                return existing
         return session
 
     async def update_session(self, session: ChannelSession) -> None:

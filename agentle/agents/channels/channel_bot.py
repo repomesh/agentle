@@ -11,12 +11,11 @@ from rsb.coroutines.run_sync import run_sync
 
 from agentle.agents.agent import Agent
 from agentle.agents.channels.channel_bot_config import ChannelBotConfig
+from agentle.agents.channels.message_conversion import channel_messages_to_user_message
 from agentle.agents.channels.models.channel_message import ChannelMessage
 from agentle.agents.channels.models.channel_response_base import ChannelResponseBase
 from agentle.agents.channels.models.channel_session import ChannelSession
 from agentle.agents.channels.providers.base import ChannelProvider
-from agentle.generations.models.message_parts.file import FilePart
-from agentle.generations.models.message_parts.text import TextPart
 from agentle.generations.models.messages.generated_assistant_message import (
     GeneratedAssistantMessage,
 )
@@ -368,37 +367,7 @@ class ChannelBot(Generic[T_Schema]):
             return None
 
     async def _messages_to_user_input(self, messages: list[ChannelMessage]) -> UserMessage:
-        parts: MutableSequence[TextPart | FilePart] = []
-        for index, message in enumerate(messages):
-            if index > 0:
-                parts.append(TextPart(text="\n\n"))
-
-            if message.text:
-                parts.append(TextPart(text=message.text))
-
-            if message.media:
-                try:
-                    if message.media.base64_data:
-                        parts.append(
-                            FilePart(
-                                data=message.media.base64_data,
-                                mime_type=message.media.mime_type or "application/octet-stream",
-                            )
-                        )
-                    elif message.media.media_id:
-                        media = await self.provider.download_media(message.media.media_id)
-                        parts.append(FilePart(data=media.data, mime_type=media.mime_type))
-                    if message.media.caption:
-                        parts.append(TextPart(text=f"Caption: {message.media.caption}"))
-                except Exception:
-                    logger.exception("Failed to download channel media")
-                    parts.append(TextPart(text="[Media file - failed to download]"))
-
-        if not parts:
-            parts.append(TextPart(text=""))
-
-        display_name = messages[0].sender_display_name if messages else None
-        return UserMessage.create_named(parts=parts, name=display_name)
+        return await channel_messages_to_user_message(messages, self.provider)
 
     async def _process_with_agent(
         self,

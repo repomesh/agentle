@@ -285,7 +285,12 @@ class InstagramDirectProvider:
             data = await response.read()
         return DownloadedChannelMedia(data=data, mime_type=bytes2mime(data))
 
-    def parse_channel_messages(self, payload: Mapping[str, Any]) -> list[ChannelMessage]:
+    def parse_channel_messages(
+        self,
+        payload: Mapping[str, Any],
+        headers: Mapping[str, str] | None = None,
+    ) -> list[ChannelMessage]:
+        del headers
         return self.webhook_to_channel_messages(
             payload,
             instagram_user_id=self.config.instagram_user_id,

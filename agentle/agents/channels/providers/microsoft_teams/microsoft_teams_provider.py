@@ -376,6 +376,16 @@ class MicrosoftTeamsProvider:
         self.remember_conversation_reference(message)
         return message
 
+    def parse_channel_messages(
+        self,
+        payload: Mapping[str, Any],
+        headers: Mapping[str, str] | None = None,
+    ) -> list[ChannelMessage]:
+        del headers
+        if str(payload.get("type") or "") != "message":
+            return []
+        return [self.parse_channel_message(dict(payload))]
+
     def remember_conversation_reference(self, message: ChannelMessage) -> None:
         reference = dict(message.metadata.get("teams_reference") or {})
         if not reference:

@@ -299,6 +299,37 @@ class WhatsAppCloudProvider:
                     return name
         return contact_identifier
 
+    def parse_channel_messages(
+        self,
+        payload: Mapping[str, Any],
+        headers: Mapping[str, str] | None = None,
+    ) -> list[ChannelMessage]:
+        del headers
+        messages: list[ChannelMessage] = []
+        for entry in payload.get("entry") or []:
+            if not isinstance(entry, Mapping):
+                continue
+            for change in entry.get("changes") or []:
+                if not isinstance(change, Mapping) or change.get("field") != "messages":
+                    continue
+                value = change.get("value") or {}
+                if not isinstance(value, dict):
+                    continue
+                metadata = value.get("metadata") or {}
+                phone_number_id = str(
+                    metadata.get("phone_number_id") or self.config.phone_number_id
+                )
+                for message_data in value.get("messages") or []:
+                    if isinstance(message_data, dict):
+                        messages.append(
+                            self.parse_channel_message(
+                                value=value,
+                                message_data=message_data,
+                                phone_number_id=phone_number_id,
+                            )
+                        )
+        return messages
+
     @classmethod
     def parse_channel_message(
         cls,

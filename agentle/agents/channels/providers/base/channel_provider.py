@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from typing import Protocol
+from collections.abc import Mapping, Sequence
+from typing import Any, Protocol
 
 from agentle.agents.channels.models.channel_capabilities import ChannelCapabilities
+from agentle.agents.channels.models.channel_message import ChannelMessage
 from agentle.agents.channels.models.channel_session import ChannelSession
 
 
@@ -54,4 +56,11 @@ class ChannelProvider(Protocol):
         ...
 
     async def download_media(self, media_id: str):
+        ...
+
+    def parse_channel_messages(
+        self,
+        payload: Mapping[str, Any],
+        headers: Mapping[str, str] | None = None,
+    ) -> Sequence[ChannelMessage]:
         ...

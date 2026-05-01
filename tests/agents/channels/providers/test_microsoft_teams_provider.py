@@ -78,3 +78,31 @@ async def test_provider_remembers_conversation_reference_for_session() -> None:
     assert session.context_data["teams_reference"]["user"]["id"] == "user-1"
 
     await provider.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_provider_parse_channel_messages_returns_message_list() -> None:
+    provider = MicrosoftTeamsProvider(
+        MicrosoftTeamsConfig(app_id="bot-1", access_token="token")
+    )
+
+    messages = provider.parse_channel_messages(_message_activity())
+
+    assert len(messages) == 1
+    assert messages[0].contact_identifier == "conv-1:user-1"
+
+    session = await provider.get_session(messages[0].contact_identifier)
+    assert session is not None
+    assert session.context_data["teams_reference"]["service_url"] == (
+        "https://smba.trafficmanager.net/amer/"
+    )
+
+    await provider.shutdown()
+
+
+def test_provider_parse_channel_messages_ignores_non_messages() -> None:
+    provider = MicrosoftTeamsProvider(
+        MicrosoftTeamsConfig(app_id="bot-1", access_token="token")
+    )
+
+    assert provider.parse_channel_messages({"type": "conversationUpdate"}) == []

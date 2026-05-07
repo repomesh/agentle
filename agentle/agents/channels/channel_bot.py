@@ -229,6 +229,7 @@ class ChannelBot(Generic[T_Schema]):
             )
 
     async def _batch_processor(self, contact_identifier: str, token: str) -> None:
+        current_task = asyncio.current_task()
         try:
             while self._running:
                 session = await self.provider.get_session(contact_identifier)
@@ -263,7 +264,29 @@ class ChannelBot(Generic[T_Schema]):
                     processing_status="failed",
                 )
         finally:
-            self._batch_processors.pop(contact_identifier, None)
+            if self._batch_processors.get(contact_identifier) is current_task:
+                self._batch_processors.pop(contact_identifier, None)
+
+    async def _start_next_batch_if_pending(
+        self,
+        contact_identifier: str,
+    ) -> None:
+        if not self._running:
+            return
+
+        lock = self._processing_locks.setdefault(contact_identifier, asyncio.Lock())
+        async with lock:
+            session = await self.provider.get_session(contact_identifier)
+            if session is None or session.is_processing or not session.pending_messages:
+                return
+
+            token = session.start_batch_processing(
+                self.config.max_batch_timeout_seconds
+            )
+            self._batch_processors[contact_identifier] = asyncio.create_task(
+                self._batch_processor(contact_identifier, token)
+            )
+            await self.provider.update_session(session)
 
     async def _process_message_batch(
         self,
@@ -296,6 +319,7 @@ class ChannelBot(Generic[T_Schema]):
             session.message_count += len(messages)
             session.finish_batch_processing(token)
             await self.provider.update_session(session)
+            await self._start_next_batch_if_pending(session.contact_identifier)
             await self._call_response_callbacks(
                 session.contact_identifier,
                 response,
@@ -309,6 +333,7 @@ class ChannelBot(Generic[T_Schema]):
             logger.exception("Failed to process channel message batch")
             session.finish_batch_processing(token)
             await self.provider.update_session(session)
+            await self._start_next_batch_if_pending(session.contact_identifier)
             await self._call_response_callbacks(
                 session.contact_identifier,
                 None,

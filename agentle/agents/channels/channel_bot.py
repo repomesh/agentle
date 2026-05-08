@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+from contextlib import suppress
 from collections.abc import Awaitable, Callable, MutableMapping, MutableSequence
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
@@ -93,11 +94,33 @@ class ChannelBot(Generic[T_Schema]):
 
     async def stop_async(self) -> None:
         self._running = False
-        for task in list(self._batch_processors.values()):
+        current_task = asyncio.current_task()
+        batch_processors = list(self._batch_processors.items())
+        for _, task in batch_processors:
             task.cancel()
+
+        for contact_identifier, task in batch_processors:
+            if task is not current_task:
+                with suppress(asyncio.CancelledError):
+                    await task
+
+            await self._clear_stale_batch_processing(contact_identifier)
+
         self._batch_processors.clear()
         self._processing_locks.clear()
         await self.provider.shutdown()
+
+    def _batch_processor_is_running(self, contact_identifier: str) -> bool:
+        task = self._batch_processors.get(contact_identifier)
+        return task is not None and not task.done()
+
+    async def _clear_stale_batch_processing(self, contact_identifier: str) -> None:
+        session = await self.provider.get_session(contact_identifier)
+        if session is None or not session.is_processing:
+            return
+
+        session.finish_batch_processing(session.processing_token)
+        await self.provider.update_session(session)
 
     @staticmethod
     def _callback_scope_key(
@@ -212,6 +235,18 @@ class ChannelBot(Generic[T_Schema]):
             current_session.add_pending_message(self._message_to_pending_dict(message))
 
             token = current_session.processing_token
+            if current_session.is_processing and not self._batch_processor_is_running(
+                contact_identifier
+            ):
+                logger.warning(
+                    "Recovering stale channel batch for %s: token=%s pending=%s",
+                    contact_identifier,
+                    current_session.processing_token,
+                    len(current_session.pending_messages),
+                )
+                current_session.finish_batch_processing(current_session.processing_token)
+                token = None
+
             if not current_session.is_processing:
                 token = current_session.start_batch_processing(
                     self.config.max_batch_timeout_seconds

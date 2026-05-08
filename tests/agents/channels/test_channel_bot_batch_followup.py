@@ -173,3 +173,82 @@ async def test_pending_messages_added_during_batch_start_followup_batch() -> Non
         assert session.processing_token is None
     finally:
         await bot.stop_async()
+
+
+@pytest.mark.asyncio
+async def test_stale_processing_session_recovers_and_starts_batch() -> None:
+    provider = MemoryChannelProvider()
+    stale_session = ChannelSession(
+        session_id="memory:contact-1",
+        contact_identifier="contact-1",
+    )
+    stale_session.add_pending_message(make_message("stale", "stale").model_dump(mode="python"))
+    stale_session.start_batch_processing(60.0)
+    provider.sessions["contact-1"] = stale_session
+
+    agent = SlowFakeAgent()
+    bot = ChannelBot(
+        agent=agent,
+        provider=provider,
+        config=ChannelBotConfig(
+            enable_message_batching=True,
+            batch_delay_seconds=0.01,
+            max_batch_timeout_seconds=1.0,
+            spam_protection_enabled=False,
+            auto_read_messages=False,
+            typing_indicator=False,
+        ),
+    )
+
+    await bot.start_async()
+    try:
+        queued = await bot.handle_channel_message(make_message("m1", "fresh"))
+        assert isinstance(queued, QueuedChannelMessageResult)
+
+        await wait_for(lambda: len(agent.calls) == 1)
+        await wait_for(lambda: not bot._batch_processors)
+
+        assert "stale" in agent.calls[0]
+        assert "fresh" in agent.calls[0]
+        session = await provider.get_session("contact-1")
+        assert session is not None
+        assert not session.pending_messages
+        assert not session.is_processing
+        assert session.processing_token is None
+    finally:
+        await bot.stop_async()
+
+
+@pytest.mark.asyncio
+async def test_stop_async_clears_processing_state_for_cancelled_batch() -> None:
+    provider = MemoryChannelProvider()
+    agent = SlowFakeAgent()
+    bot = ChannelBot(
+        agent=agent,
+        provider=provider,
+        config=ChannelBotConfig(
+            enable_message_batching=True,
+            batch_delay_seconds=60.0,
+            max_batch_timeout_seconds=60.0,
+            spam_protection_enabled=False,
+            auto_read_messages=False,
+            typing_indicator=False,
+        ),
+    )
+
+    await bot.start_async()
+    queued = await bot.handle_channel_message(make_message("m1", "queued"))
+    assert isinstance(queued, QueuedChannelMessageResult)
+
+    session = await provider.get_session("contact-1")
+    assert session is not None
+    assert session.is_processing
+    assert bot._batch_processors
+
+    await bot.stop_async()
+
+    session = await provider.get_session("contact-1")
+    assert session is not None
+    assert not session.is_processing
+    assert session.processing_token is None
+    assert session.pending_messages

@@ -458,6 +458,9 @@ class ChannelBot(Generic[T_Schema]):
         if not isinstance(response, str) and response.parsed is not None:
             response_text = getattr(response.parsed, "response", response.text)
 
+        if not str(response_text).strip():
+            return
+
         for part in self._split_response(str(response_text)):
             await self.provider.send_text_message(recipient, part, reply_to)
             reply_to = None

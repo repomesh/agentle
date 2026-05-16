@@ -433,9 +433,10 @@ class Generation[T](BaseModel):
         """
         Update the text content of a specific choice by replacing text parts.
 
-        This method replaces all TextPart instances in the specified choice's
-        message parts with a single new TextPart containing the provided text.
-        Tool execution suggestions are preserved.
+        This method replaces the specified choice's public text with a single
+        TextPart containing the provided text. Tool execution suggestions are
+        intentionally removed because this method is used for public output
+        sanitization and guardrail modifications.
 
         Args:
             new_text: The new text content to set
@@ -446,18 +447,10 @@ class Generation[T](BaseModel):
                 f"Choice index {choice} is out of range. Only {len(self.choices)} choices available."
             )
 
-        # Get the current message parts
         current_parts = self.choices[choice].message.parts
-
-        # Filter out all TextPart instances, keep only ToolExecutionSuggestion
-        tool_calls = [
-            part for part in current_parts if isinstance(part, ToolExecutionSuggestion)
-        ]
-
-        # Clear the parts list and add the new text part followed by tool calls
         current_parts.clear()
-        current_parts.append(TextPart(text=new_text))
-        current_parts.extend(tool_calls)
+        if new_text:
+            current_parts.append(TextPart(text=new_text))
 
     def get_parsed(self, choice: int) -> T:
         """

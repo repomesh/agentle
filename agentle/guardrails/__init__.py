@@ -20,6 +20,7 @@ from .validators.pii_detection_validator import PIIDetectionValidator
 from .validators.toxicity_validator import ToxicityValidator
 from .validators.prompt_injection_validator import PromptInjectionValidator
 from .validators.response_quality_validator import ResponseQualityValidator
+from .validators.tool_leakage_validator import ToolLeakageValidator
 
 __all__ = [
     # Core
@@ -38,4 +39,5 @@ __all__ = [
     "ToxicityValidator",
     "PromptInjectionValidator",
     "ResponseQualityValidator",
+    "ToolLeakageValidator",
 ]

@@ -79,12 +79,17 @@ class GeneratedAssistantMessage[T](BaseModel):
     @property
     def text(self) -> str:
         """
-        Returns the concatenated text representation of all parts in this message.
+        Returns the public text representation of this message.
+
+        Tool execution suggestions are internal control-plane data. They must stay
+        available through ``tool_calls`` for observability, but must never be
+        rendered as user-visible assistant text.
 
         Returns:
-            str: The concatenated text of all message parts.
+            str: The concatenated text of all public text parts.
         """
         return "".join(
-            part.text if isinstance(part.text, str) else part.text.text
+            str(part.text) if isinstance(part.text, str) else part.text.text
             for part in self.parts
+            if isinstance(part, TextPart)
         )

@@ -84,6 +84,7 @@ from agentle.agents.errors.tool_suspension_error import ToolSuspensionError
 from agentle.agents.knowledge.static_knowledge import NO_CACHE, StaticKnowledge
 from agentle.guardrails.core.guardrail_config import GuardrailConfig
 from agentle.guardrails.core.guardrail_manager import GuardrailManager
+from agentle.guardrails.core.guardrail_result import GuardrailResult
 from agentle.guardrails.core.input_guardrail_validator import InputGuardrailValidator
 from agentle.guardrails.core.output_guardrail_validator import OutputGuardrailValidator
 from agentle.utils.file_validation import FileValidationError
@@ -1114,7 +1115,10 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
         )
 
     async def _validate_output_with_guardrails(
-        self, output_text: str, chat_id: str | None = None
+        self,
+        output_text: str,
+        chat_id: str | None = None,
+        tool_names: Sequence[str] | None = None,
     ) -> str:
         """
         Validate output text with guardrails if configured.
@@ -1141,7 +1145,11 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
         try:
             validation_result = await self.guardrail_manager.validate_output_async(
                 content=output_text,
-                context={"agent_name": self.name, "chat_id": chat_id},
+                context={
+                    "agent_name": self.name,
+                    "chat_id": chat_id,
+                    "tool_names": list(tool_names or []),
+                },
                 raise_on_violation=self.guardrail_config.get(
                     "fail_on_output_violation", False
                 ),
@@ -1159,12 +1167,46 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
             if isinstance(validation_result, str):
                 return validation_result
 
+            if isinstance(validation_result, GuardrailResult):
+                if validation_result.modified_content is not None:
+                    return validation_result.modified_content
+                if validation_result.should_block:
+                    return ""
+
             return output_text
 
         except Exception:
             if self.guardrail_config.get("fail_on_output_violation", False):
                 raise
             return output_text
+
+    @staticmethod
+    def _tool_names_from_tools(tools: Sequence[Tool[Any]]) -> list[str]:
+        return list(dict.fromkeys(tool.name for tool in tools if tool.name))
+
+    async def _sanitize_generation_for_public_output(
+        self,
+        generation: Generation[T_Schema],
+        chat_id: str | None = None,
+        tool_names: Sequence[str] | None = None,
+    ) -> Generation[T_Schema]:
+        """
+        Applies output guardrails to the public text of a Generation.
+
+        ToolExecutionSuggestion parts remain available for diagnostics through
+        ``tool_calls``, while ``generation.text`` only contains public TextPart
+        content.
+        """
+        if not generation.text:
+            return generation
+
+        validated_text = await self._validate_output_with_guardrails(
+            generation.text, chat_id, tool_names=tool_names
+        )
+        if validated_text != generation.text:
+            generation.update_text(validated_text)
+
+        return generation
 
     @overload
     def run(
@@ -1755,6 +1797,12 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                             shortest_step_duration_ms=generation_time_single,
                         )
 
+                        generation_chunk = (
+                            await self._sanitize_generation_for_public_output(
+                                generation_chunk, chat_id
+                            )
+                        )
+
                         # Yield intermediate chunk
                         yield AgentRunOutput(
                             generation=generation_chunk,
@@ -1843,16 +1891,11 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                             shortest_step_duration_ms=step_duration,
                         )
 
-                        # Validate output with guardrails
-                        if final_generation.text:
-                            validated_text = (
-                                await self._validate_output_with_guardrails(
-                                    final_generation.text, chat_id
-                                )
+                        final_generation = (
+                            await self._sanitize_generation_for_public_output(
+                                final_generation, chat_id
                             )
-                            # Update generation text if modified by guardrails
-                            if validated_text != final_generation.text:
-                                final_generation.update_text(validated_text)
+                        )
 
                         # Save assistant output after successful execution.
                         await persist_assistant_message(final_generation.message)
@@ -1958,14 +2001,9 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                 shortest_step_duration_ms=step_duration,
             )
 
-            # Validate output with guardrails
-            if generation.text:
-                validated_text = await self._validate_output_with_guardrails(
-                    generation.text, chat_id
-                )
-                # Update generation text if modified by guardrails
-                if validated_text != generation.text:
-                    generation.update_text(validated_text)
+            generation = await self._sanitize_generation_for_public_output(
+                generation, chat_id
+            )
 
             # Save assistant output after successful execution.
             await persist_assistant_message(generation.message)
@@ -1980,6 +2018,7 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
 
         # Agent has tools - handle streaming and non-streaming paths
         all_tools: Sequence[Tool] = cast(Sequence[Tool], await self._all_tools())
+        tool_names = self._tool_names_from_tools(all_tools)
 
         available_tools: MutableMapping[str, Tool[Any]] = {
             tool.name: tool for tool in all_tools
@@ -2167,6 +2206,14 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                                     ),
                                 )
 
+                                generation_chunk = (
+                                    await self._sanitize_generation_for_public_output(
+                                        generation_chunk,
+                                        chat_id,
+                                        tool_names=tool_names,
+                                    )
+                                )
+
                                 # Yield intermediate chunk
                                 yield AgentRunOutput(
                                     generation=generation_chunk,
@@ -2232,16 +2279,13 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                                     final_generation.usage.total_tokens
                                 )
 
-                                # Validate output with guardrails
-                                if final_generation.text:
-                                    validated_text = (
-                                        await self._validate_output_with_guardrails(
-                                            final_generation.text, chat_id
-                                        )
+                                final_generation = (
+                                    await self._sanitize_generation_for_public_output(
+                                        final_generation,
+                                        chat_id,
+                                        tool_names=tool_names,
                                     )
-                                    # Update generation text if modified by guardrails
-                                    if validated_text != final_generation.text:
-                                        final_generation.update_text(validated_text)
+                                )
 
                                 # Calculate final metrics
                                 total_execution_time = (
@@ -2334,16 +2378,11 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                         # Complete execution before returning
                         context.complete_execution()
 
-                        # Validate output with guardrails
-                        if final_tool_generation.text:
-                            validated_text = (
-                                await self._validate_output_with_guardrails(
-                                    final_tool_generation.text, chat_id
-                                )
-                            )
-                            # Update generation text if modified by guardrails
-                            if validated_text != final_tool_generation.text:
-                                final_tool_generation.update_text(validated_text)
+                        final_tool_generation = await self._sanitize_generation_for_public_output(
+                            cast(Generation[T_Schema], final_tool_generation),
+                            chat_id,
+                            tool_names=tool_names,
+                        )
 
                         # Calculate final metrics
                         total_execution_time = (
@@ -2867,9 +2906,17 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                                  ]
                              )
 
+                        final_generation_to_return = (
+                            await self._sanitize_generation_for_public_output(
+                                cast(Generation[T_Schema], final_generation_to_return),
+                                chat_id,
+                                tool_names=tool_names,
+                            )
+                        )
+
                         context.complete_execution()
                         yield self._build_agent_run_output(
-                            generation=cast(Generation[T_Schema], final_generation_to_return),
+                            generation=final_generation_to_return,
                             context=context,
                             performance_metrics=performance_metrics,
                         )
@@ -3122,6 +3169,12 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                         ),
                     )
 
+                    generation = await self._sanitize_generation_for_public_output(
+                        generation,
+                        chat_id,
+                        tool_names=tool_names,
+                    )
+
                     # Save assistant output after successful execution.
                     await persist_assistant_message(generation.message)
 
@@ -3197,11 +3250,19 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                     ),
                 )
 
+                sanitized_tool_call_generation = (
+                    await self._sanitize_generation_for_public_output(
+                        cast(Generation[T_Schema], tool_call_generation),
+                        chat_id,
+                        tool_names=tool_names,
+                    )
+                )
+
                 # Save assistant output after successful execution.
-                await persist_assistant_message(tool_call_generation.message)
+                await persist_assistant_message(sanitized_tool_call_generation.message)
 
                 return self._build_agent_run_output(
-                    generation=cast(Generation[T_Schema], tool_call_generation),
+                    generation=sanitized_tool_call_generation,
                     context=context,
                     performance_metrics=performance_metrics,
                 )
@@ -3635,9 +3696,17 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                          ]
                      )
 
+                final_generation_to_return = (
+                    await self._sanitize_generation_for_public_output(
+                        cast(Generation[T_Schema], final_generation_to_return),
+                        chat_id,
+                        tool_names=tool_names,
+                    )
+                )
+
                 context.complete_execution()
                 return self._build_agent_run_output(
-                    generation=cast(Generation[T_Schema], final_generation_to_return),
+                    generation=final_generation_to_return,
                     context=context,
                     performance_metrics=performance_metrics,
                 )
@@ -4679,6 +4748,7 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
         available_tools: MutableMapping[str, Tool[Any]] = {
             tool.name: tool for tool in all_tools
         }
+        tool_names = self._tool_names_from_tools(all_tools)
 
         # Continue the execution loop from current iteration
         while current_iteration <= self.agent_config.maxIterations:
@@ -4780,14 +4850,10 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                 else:
                     generation = cast(Generation[T_Schema], tool_call_generation)
 
-                # Validate output with guardrails
-                if generation.text:
-                    validated_text = await self._validate_output_with_guardrails(
-                        generation.text, None
-                    )
-                    # Update generation text if modified by guardrails
-                    if validated_text != generation.text:
-                        generation.update_text(validated_text)
+                generation = await self._sanitize_generation_for_public_output(
+                    generation,
+                    tool_names=tool_names,
+                )
 
                 final_step.mark_completed()
                 context.add_step(final_step)

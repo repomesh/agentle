@@ -13,6 +13,9 @@ from agentle.agents.channels.models.channel_capabilities import ChannelCapabilit
 from agentle.agents.channels.models.channel_message import ChannelMessage
 from agentle.agents.channels.models.channel_session import ChannelSession
 from agentle.generations.models.message_parts.text import TextPart
+from agentle.generations.models.message_parts.tool_execution_suggestion import (
+    ToolExecutionSuggestion,
+)
 from agentle.generations.models.messages.generated_assistant_message import (
     GeneratedAssistantMessage,
 )
@@ -217,6 +220,29 @@ async def test_stale_processing_session_recovers_and_starts_batch() -> None:
         assert session.processing_token is None
     finally:
         await bot.stop_async()
+
+
+@pytest.mark.asyncio
+async def test_send_response_skips_empty_public_text_after_tool_sanitization() -> None:
+    provider = MemoryChannelProvider()
+    bot = ChannelBot(
+        agent=SlowFakeAgent(),
+        provider=provider,
+        config=ChannelBotConfig(typing_indicator=False),
+    )
+    response = GeneratedAssistantMessage(
+        parts=[
+            ToolExecutionSuggestion(
+                tool_name="registrar_agendamento",
+                args={"data_hora_inicio": "2026-05-19 11:15"},
+            )
+        ],
+        parsed=None,
+    )
+
+    await bot._send_response("contact-1", response)
+
+    assert provider.sent_texts == []
 
 
 @pytest.mark.asyncio

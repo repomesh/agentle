@@ -164,7 +164,7 @@ class GuardrailManager:
                     # Atualizar métricas
                     self.metrics.update_validation_metrics(validator.name, result)
 
-                    if result.should_modify and result.modified_content:
+                    if result.should_modify and result.modified_content is not None:
                         processed_content = result.modified_content
 
                     if result.should_block and self.fail_fast:
@@ -196,7 +196,10 @@ class GuardrailManager:
         if final_result.should_block or final_result.action == GuardrailAction.WARN:
             return final_result
 
-        return final_result.modified_content or processed_content
+        if final_result.modified_content is not None:
+            return final_result.modified_content
+
+        return processed_content
 
     def _process_results(
         self, results: list[GuardrailResult], content: str
@@ -224,7 +227,7 @@ class GuardrailManager:
         modifications: list[str] = []
 
         for result in results:
-            if result.should_modify and result.modified_content:
+            if result.should_modify and result.modified_content is not None:
                 modified_content = result.modified_content
                 modifications.append(result.validator_name)
 

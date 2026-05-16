@@ -5,6 +5,7 @@ This validator detects when the AI accidentally exposes internal tool definition
 function signatures, or hallucinates tool call syntax in its text responses.
 """
 
+import ast
 import json
 import re
 from collections.abc import Callable, Sequence
@@ -36,7 +37,7 @@ class ToolLeakageValidator(OutputGuardrailValidator):
         enabled: bool = True,
         tools: Sequence[Callable[..., Any]] | None = None,
         tool_names: list[str] | None = None,
-        block_on_detection: bool = True,
+        block_on_detection: bool = False,
         redact_leakage: bool = True,
         config: dict[str, Any] | None = None,
     ):
@@ -67,6 +68,7 @@ class ToolLeakageValidator(OutputGuardrailValidator):
 
         self.block_on_detection = block_on_detection
         self.redact_leakage = redact_leakage
+        self.redaction_text = str((config or {}).get("redaction_text", ""))
 
         # Patterns to detect tool leakage
         self.patterns = [
@@ -74,12 +76,16 @@ class ToolLeakageValidator(OutputGuardrailValidator):
             r'\{\s*["\']?\w+["\']?\s*:\s*\{[^}]*\}\s*\}',
             # Function definitions: def function_name(...) or function function_name(...)
             r"(?:def|function)\s+\w+\s*\([^)]*\)",
-            # Tool call syntax: Tool: name, Parameters: {...}
-            r"Tool\s*:\s*\w+\s*,?\s*Parameters?\s*:\s*\{",
+            # Tool call syntax: Tool: name + Args/Arguments/Parameters
+            r"\bTool\s*:\s*[\w.-]+\s*(?:,|\n|\r\n)\s*"
+            r"(?:Args|Arguments|Parameters?)\s*:\s*"
+            r"(?:\{[^\n]*\}|\[[^\n]*\]|[^\n]+)",
             # Function signatures with types: function_name(param: type) -> type
             r"\w+\s*\([^)]*:\s*\w+[^)]*\)\s*->\s*\w+",
             # Explicit tool mentions: "calling tool X" or "using function Y"
             r'(?:calling|using|executing)\s+(?:tool|function)\s+["\']?\w+["\']?',
+            # OpenAI/Responses-style textual function call fields
+            r'\b(?:function_call|tool_call|tool_calls)\b\s*[:=]\s*(?:\{[^\n]*\}|\[[^\n]*\]|[^\n]+)',
             # Parameter schemas: {"name": "string", "type": "..."}
             r'\{\s*["\']name["\']\s*:\s*["\']string["\']',
         ]
@@ -137,13 +143,19 @@ class ToolLeakageValidator(OutputGuardrailValidator):
             violations.extend(json_matches)
             confidence = max(confidence, 0.9)
 
-        # 2. Check for function definitions
+        # 2. Check for rendered tool call blocks
+        tool_block_matches = self._detect_rendered_tool_blocks(content)
+        if tool_block_matches:
+            violations.extend(tool_block_matches)
+            confidence = max(confidence, 0.98)
+
+        # 3. Check for function definitions
         function_matches = self._detect_function_definitions(content)
         if function_matches:
             violations.extend(function_matches)
             confidence = max(confidence, 0.85)
 
-        # 3. Check for explicit tool name mentions
+        # 4. Check for explicit tool name mentions
         if tool_names_to_check:
             tool_name_matches = self._detect_tool_name_leakage(
                 content, tool_names_to_check
@@ -152,7 +164,7 @@ class ToolLeakageValidator(OutputGuardrailValidator):
                 violations.extend(tool_name_matches)
                 confidence = max(confidence, 0.95)
 
-        # 4. Check for generic tool patterns
+        # 5. Check for generic tool patterns
         pattern_matches = self._detect_generic_patterns(content)
         if pattern_matches:
             violations.extend(pattern_matches)
@@ -175,7 +187,7 @@ class ToolLeakageValidator(OutputGuardrailValidator):
         if self.redact_leakage:
             modified_content = self._redact_tool_leakage(content, violations)
             action = GuardrailAction.MODIFY
-            reason = f"{violation_summary}. Content has been redacted."
+            reason = f"{violation_summary}. Content has been sanitized."
         elif self.block_on_detection:
             action = GuardrailAction.BLOCK
             reason = (
@@ -211,8 +223,7 @@ class ToolLeakageValidator(OutputGuardrailValidator):
             for match in matches:
                 json_str = match.group()
                 try:
-                    # Try to parse as JSON
-                    parsed = json.loads(json_str)
+                    parsed = self._parse_mapping(json_str)
 
                     # Check if it looks like a tool call
                     if isinstance(parsed, dict) and len(parsed) == 1:
@@ -228,7 +239,17 @@ class ToolLeakageValidator(OutputGuardrailValidator):
                                     "position": match.start(),
                                 }
                             )
-                except json.JSONDecodeError:
+                    elif isinstance(parsed, dict) and self._looks_like_tool_payload(
+                        parsed
+                    ):
+                        violations.append(
+                            {
+                                "type": "json_tool_payload",
+                                "pattern": json_str[:100],
+                                "position": match.start(),
+                            }
+                        )
+                except (json.JSONDecodeError, ValueError, SyntaxError):
                     # Not valid JSON, but might still look suspicious
                     if "tool" in json_str.lower() or "function" in json_str.lower():
                         violations.append(
@@ -240,6 +261,52 @@ class ToolLeakageValidator(OutputGuardrailValidator):
                         )
         except Exception:
             pass
+
+        return violations
+
+    def _parse_mapping(self, value: str) -> Any:
+        """Parse JSON first, then Python-literal dicts commonly leaked in logs."""
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return ast.literal_eval(value)
+
+    def _looks_like_tool_payload(self, parsed: dict[str, Any]) -> bool:
+        """Detect common structured tool-call payload shapes."""
+        lowered_keys = {str(key).lower() for key in parsed.keys()}
+        if {"tool", "args"} <= lowered_keys:
+            return True
+        if {"tool_name", "args"} <= lowered_keys:
+            return True
+        if {"name", "arguments"} <= lowered_keys:
+            return True
+        if {"function", "arguments"} <= lowered_keys:
+            return True
+        return bool(lowered_keys & {"tool_call", "tool_calls", "function_call"})
+
+    def _detect_rendered_tool_blocks(self, content: str) -> list[dict[str, Any]]:
+        """Detect rendered internal ToolExecutionSuggestion text."""
+        violations = []
+        pattern = re.compile(
+            r"\bTool\s*:\s*(?P<tool_name>[\w.-]+)"
+            r"(?P<rest>\s*(?:,|\n|\r\n)\s*"
+            r"(?P<label>Args|Arguments|Parameters?)\s*:\s*"
+            r"(?P<args>\{[^\n]*\}|\[[^\n]*\]|[^\n]+))?",
+            re.IGNORECASE,
+        )
+
+        for match in pattern.finditer(content):
+            if not match.group("rest"):
+                continue
+
+            violations.append(
+                {
+                    "type": "rendered_tool_call",
+                    "tool_name": match.group("tool_name"),
+                    "pattern": match.group()[:500],
+                    "position": match.start(),
+                }
+            )
 
         return violations
 
@@ -274,6 +341,7 @@ class ToolLeakageValidator(OutputGuardrailValidator):
             suspicious_contexts = [
                 rf"\b{re.escape(tool_name)}\s*\(",  # function call syntax
                 rf'\{{\s*["\']?{re.escape(tool_name)}["\']?\s*:',  # JSON key
+                rf"\bTool\s*:\s*{re.escape(tool_name)}\b",  # rendered ToolExecutionSuggestion
                 rf'(?:tool|function)\s+["\']?{re.escape(tool_name)}["\']?',  # explicit mention
             ]
 
@@ -322,8 +390,8 @@ class ToolLeakageValidator(OutputGuardrailValidator):
         for violation in sorted_violations:
             pattern = violation.get("pattern", "")
             if pattern and pattern in modified_content:
-                # Replace with redacted message
-                redaction = "[REDACTED: Internal tool information]"
-                modified_content = modified_content.replace(pattern, redaction, 1)
+                modified_content = modified_content.replace(
+                    pattern, self.redaction_text, 1
+                )
 
-        return modified_content
+        return re.sub(r"\n{3,}", "\n\n", modified_content).strip()

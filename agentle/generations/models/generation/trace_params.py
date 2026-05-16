@@ -37,7 +37,12 @@ class TraceParams(TypedDict, total=False):
         metadata: Custom JSON-serializable metadata
         tags: Categorization labels for filtering
         public: Visibility flag for trace data
+        trace_id: Provider trace identifier
+        trace_name: Provider trace display name
+        span_name: Provider span display name
+        generation_name: Provider generation display name
         parent_trace_id: ID of parent trace for establishing trace hierarchy
+        parent_span_id: ID of parent span for provider-specific span hierarchy
 
     Example:
         >>> trace = TraceParams(
@@ -56,4 +61,9 @@ class TraceParams(TypedDict, total=False):
     metadata: NotRequired[dict[str, Any]]
     tags: NotRequired[Sequence[str]]
     public: NotRequired[bool]
+    trace_id: NotRequired[str]
+    trace_name: NotRequired[str]
+    span_name: NotRequired[str]
+    generation_name: NotRequired[str]
     parent_trace_id: NotRequired[str]
+    parent_span_id: NotRequired[str]

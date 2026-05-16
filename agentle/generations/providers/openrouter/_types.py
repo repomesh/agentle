@@ -202,6 +202,16 @@ class OpenRouterReasoning(TypedDict, total=False):
     enabled: bool
 
 
+class OpenRouterTraceConfig(TypedDict, total=False):
+    """Observability trace metadata for OpenRouter."""
+
+    trace_id: str
+    trace_name: str
+    span_name: str
+    generation_name: str
+    parent_span_id: str
+
+
 class OpenRouterPdfPluginConfig(TypedDict):
     """PDF parsing plugin configuration."""
 
@@ -327,6 +337,10 @@ class OpenRouterRequest(TypedDict, total=False):
     reasoning: OpenRouterReasoning
     plugins: Sequence[OpenRouterPlugin]
     transforms: Sequence[Literal["middle-out"]]  # Context compression
+    session_id: str
+    trace: OpenRouterTraceConfig
+    user: str
+    metadata: dict[str, str]
 
 
 # OpenRouter Models API types

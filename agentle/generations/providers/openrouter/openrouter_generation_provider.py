@@ -191,6 +191,103 @@ class OpenRouterGenerationProvider(GenerationProvider):
 
     # ==================== Helper Methods ====================
 
+    @staticmethod
+    def _coerce_openrouter_metadata_value(
+        value: Any,
+        *,
+        max_length: int,
+    ) -> str | None:
+        if value is None:
+            return None
+
+        if isinstance(value, str):
+            text = value.strip()
+        else:
+            text = str(value).strip()
+
+        if not text:
+            return None
+
+        return text[:max_length]
+
+    @classmethod
+    def _normalize_openrouter_metadata(
+        cls,
+        metadata: Any,
+    ) -> dict[str, str] | None:
+        if not isinstance(metadata, Mapping):
+            return None
+
+        normalized: dict[str, str] = {}
+        for key, value in metadata.items():
+            normalized_key = cls._coerce_openrouter_metadata_value(
+                key,
+                max_length=64,
+            )
+            normalized_value = cls._coerce_openrouter_metadata_value(
+                value,
+                max_length=512,
+            )
+            if not normalized_key or normalized_value is None:
+                continue
+
+            normalized[normalized_key] = normalized_value
+            if len(normalized) >= 16:
+                break
+
+        return normalized or None
+
+    @classmethod
+    def _apply_observability_params(
+        cls,
+        request_body: OpenRouterRequest,
+        generation_config: GenerationConfig,
+    ) -> None:
+        trace_params = generation_config.trace_params
+        if not isinstance(trace_params, Mapping):
+            return
+
+        session_id = cls._coerce_openrouter_metadata_value(
+            trace_params.get("session_id"),
+            max_length=256,
+        )
+        if session_id:
+            request_body["session_id"] = session_id
+
+        user = cls._coerce_openrouter_metadata_value(
+            trace_params.get("user_id") or trace_params.get("user"),
+            max_length=256,
+        )
+        if user:
+            request_body["user"] = user
+
+        metadata = cls._normalize_openrouter_metadata(trace_params.get("metadata"))
+        if metadata:
+            request_body["metadata"] = metadata
+
+        trace: dict[str, str] = {}
+        trace_field_map = {
+            "trace_id": ("trace_id",),
+            "trace_name": ("trace_name", "name"),
+            "span_name": ("span_name",),
+            "generation_name": ("generation_name",),
+            "parent_span_id": ("parent_span_id",),
+        }
+        for target_field, source_fields in trace_field_map.items():
+            value = None
+            for source_field in source_fields:
+                value = cls._coerce_openrouter_metadata_value(
+                    trace_params.get(source_field),
+                    max_length=256,
+                )
+                if value:
+                    break
+            if value:
+                trace[target_field] = value
+
+        if trace:
+            request_body["trace"] = trace  # type: ignore[typeddict-item]
+
     async def _fetch_models(self) -> dict[str, OpenRouterModel]:
         """Fetch available models from OpenRouter API and cache them.
 
@@ -1300,6 +1397,8 @@ class OpenRouterGenerationProvider(GenerationProvider):
         if self.transforms:
             request_body["transforms"] = self.transforms  # type: ignore
 
+        self._apply_observability_params(request_body, _generation_config)
+
         # Make the streaming API request
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -1483,6 +1582,8 @@ class OpenRouterGenerationProvider(GenerationProvider):
         # Add transforms if configured
         if self.transforms:
             request_body["transforms"] = self.transforms  # type: ignore
+
+        self._apply_observability_params(request_body, _generation_config)
 
         # Make the API request
         headers = {

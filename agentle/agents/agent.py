@@ -1611,6 +1611,49 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                 return
 
             assert self.conversation_store is not None
+            # Best-effort: attach a compact, JSON-serializable summary of the tool
+            # calls executed during this run so downstream conversation stores can
+            # surface "which tools the agent used" (e.g. an inbox UI) without needing
+            # access to the full execution context. Must never break persistence.
+            try:
+                executed_tools: list[dict[str, Any]] = []
+                for tool_result in context.tool_execution_results:
+                    suggestion = getattr(tool_result, "suggestion", None)
+                    if suggestion is None:
+                        continue
+                    raw_result = getattr(tool_result, "result", None)
+                    result_text = (
+                        raw_result if isinstance(raw_result, str) else str(raw_result)
+                    )
+                    if len(result_text) > 4000:
+                        result_text = result_text[:4000]
+                    raw_args = dict(getattr(suggestion, "args", {}) or {})
+                    safe_args = {
+                        str(key): (
+                            value
+                            if isinstance(value, (str, int, float, bool, type(None)))
+                            else str(value)
+                        )
+                        for key, value in raw_args.items()
+                    }
+                    executed_tools.append(
+                        {
+                            "name": str(getattr(suggestion, "tool_name", "") or ""),
+                            "args": safe_args,
+                            "result": result_text,
+                            "success": bool(getattr(tool_result, "success", True)),
+                        }
+                    )
+                if executed_tools:
+                    object.__setattr__(message, "tool_calls_summary", executed_tools)
+            except Exception:
+                _logger.bind_optional(
+                    lambda log: log.debug(
+                        "Could not attach tool_calls_summary to assistant message",
+                        exc_info=True,
+                    )
+                )
+
             await self.conversation_store.add_message_async(chat_id, message)
 
         # Handle conversation store integration
@@ -3470,6 +3513,22 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                         execution_time_ms=tool_execution_time,
                         success=True,
                     )
+
+                    # Terminal tool executed: do not run any further tool calls
+                    # emitted in this same generation. Prevents duplicate handoffs
+                    # and tools running after a terminal/handoff tool.
+                    _terminal_ref = getattr(selected_tool, "callable_ref", None)
+                    if _terminal_ref is not None and getattr(
+                        _terminal_ref, "_is_terminal", False
+                    ):
+                        if len(tool_call_generation.tool_calls) > 1:
+                            _logger.bind_optional(
+                                lambda log: log.info(
+                                    "Terminal tool '%s' executed; skipping remaining tool calls in this generation",
+                                    tool_execution_suggestion.tool_name,
+                                )
+                            )
+                        break
                 except ToolSuspensionError as suspension_error:
                     # Handle tool suspension for HITL workflows
                     suspension_reason = suspension_error.reason
@@ -3631,6 +3690,11 @@ class Agent[T_Schema = WithoutStructuredOutput](BaseModel):
                                         parts=[TextPart(text=str(message_value))]
                                     )
                                 )
+
+                        # Only the first terminal tool in a generation should
+                        # terminate and inject a message; ignore duplicate
+                        # terminal calls emitted in the same response.
+                        break
 
             if should_terminate:
                  # Calculate final metrics for successful termination

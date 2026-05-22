@@ -18,6 +18,9 @@ from agentle.agents.channels.models.channel_session import ChannelSession
 from agentle.agents.channels.models.downloaded_channel_media import (
     DownloadedChannelMedia,
 )
+from agentle.agents.channels.providers.whatsapp_cloud._whatsapp_markdown import (
+    to_whatsapp_markdown,
+)
 from agentle.agents.channels.providers.whatsapp_cloud.whatsapp_cloud_config import (
     WhatsAppCloudConfig,
 )
@@ -171,7 +174,7 @@ class WhatsAppCloudProvider:
             "messaging_product": "whatsapp",
             "to": self._normalize_recipient(to),
             "type": "text",
-            "text": {"body": text},
+            "text": {"body": to_whatsapp_markdown(text)},
         }
         if quoted_message_id:
             payload["context"] = {"message_id": quoted_message_id}
@@ -203,7 +206,7 @@ class WhatsAppCloudProvider:
             media_type: {"link": media_url},
         }
         if caption:
-            payload[media_type]["caption"] = caption
+            payload[media_type]["caption"] = to_whatsapp_markdown(caption)
         if filename and media_type == "document":
             payload[media_type]["filename"] = filename
         if quoted_message_id:

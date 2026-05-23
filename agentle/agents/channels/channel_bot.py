@@ -17,6 +17,7 @@ from agentle.agents.channels.models.channel_message import ChannelMessage
 from agentle.agents.channels.models.channel_response_base import ChannelResponseBase
 from agentle.agents.channels.models.channel_session import ChannelSession
 from agentle.agents.channels.providers.base import ChannelProvider
+from agentle.generations.models.message_parts.text import TextPart
 from agentle.generations.models.messages.generated_assistant_message import (
     GeneratedAssistantMessage,
 )
@@ -36,6 +37,15 @@ CallbackFunction = (
         [str, str | None, GeneratedAssistantMessage[Any] | None, dict[str, Any]],
         Awaitable[None],
     ]
+)
+
+# Produces a per-turn context string injected into the user turn (after the
+# cached system prompt). Returning fresh, volatile data here — instead of
+# baking it into the agent's static instructions — keeps the system prompt
+# stable across turns so prompt caching can hit it.
+RuntimeContextProvider = (
+    Callable[[list[ChannelMessage]], "str | None"]
+    | Callable[[list[ChannelMessage]], Awaitable["str | None"]]
 )
 
 
@@ -68,6 +78,7 @@ class ChannelBot(Generic[T_Schema]):
         config: ChannelBotConfig | None = None,
         tts_provider: TtsProvider | None = None,
         file_storage_manager: FileStorageManager | None = None,
+        runtime_context_provider: RuntimeContextProvider | None = None,
     ):
         if agent.conversation_store is None:
             raise ValueError("Agent must have a conversation_store configured.")
@@ -77,6 +88,7 @@ class ChannelBot(Generic[T_Schema]):
         self.config = config or ChannelBotConfig()
         self.tts_provider = tts_provider
         self.file_storage_manager = file_storage_manager
+        self.runtime_context_provider = runtime_context_provider
         self._running = False
         self._response_callbacks: MutableSequence[CallbackWithContext] = []
         self._batch_processors: MutableMapping[str, asyncio.Task[Any]] = {}
@@ -427,7 +439,28 @@ class ChannelBot(Generic[T_Schema]):
             return None
 
     async def _messages_to_user_input(self, messages: list[ChannelMessage]) -> UserMessage:
-        return await channel_messages_to_user_message(messages, self.provider)
+        user_message = await channel_messages_to_user_message(messages, self.provider)
+        runtime_context = await self._resolve_runtime_context(messages)
+        if not runtime_context:
+            return user_message
+        # Prepend the volatile context to the user turn so it stays out of the
+        # cached system prompt prefix.
+        return UserMessage(parts=[TextPart(text=runtime_context), *user_message.parts])
+
+    async def _resolve_runtime_context(
+        self, messages: list[ChannelMessage]
+    ) -> str | None:
+        if self.runtime_context_provider is None:
+            return None
+        try:
+            result = self.runtime_context_provider(messages)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception:
+            logger.exception("runtime_context_provider raised; skipping runtime context")
+            return None
+        text = str(result or "").strip()
+        return text or None
 
     async def _process_with_agent(
         self,

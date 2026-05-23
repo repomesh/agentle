@@ -29,6 +29,7 @@ from agentle.generations.providers.openrouter._types import (
     OpenRouterAssistantMessage,
     OpenRouterMessage,
     OpenRouterSystemMessage,
+    OpenRouterTextPart,
     OpenRouterToolCall,
     OpenRouterToolMessage,
     OpenRouterUserMessage,
@@ -75,9 +76,26 @@ class AgentleMessageToOpenRouterMessageAdapter(
 
         match message:
             case DeveloperMessage():
-                # Developer messages become system messages
-                # Concatenate all text parts
+                # Developer messages become system messages.
                 content = "".join(str(p) for p in message.parts)
+                wants_cache = any(
+                    isinstance(p, TextPart)
+                    and getattr(p, "cache_control", None) is not None
+                    for p in message.parts
+                )
+                if wants_cache:
+                    # Emit array content so the cache_control marker survives.
+                    # A flat string silently drops it, which made prompt caching
+                    # of the system prompt a no-op on this provider.
+                    cached_part: OpenRouterTextPart = {
+                        "type": "text",
+                        "text": content,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                    return OpenRouterSystemMessage(
+                        role="system",
+                        content=[cached_part],
+                    )
                 return OpenRouterSystemMessage(
                     role="system",
                     content=content,

@@ -92,10 +92,15 @@ class OpenRouterToolCall(TypedDict):
 
 
 class OpenRouterSystemMessage(TypedDict):
-    """System/developer message format."""
+    """System/developer message format.
+
+    ``content`` may be a plain string or a list of text parts. The list form is
+    required to attach ``cache_control`` markers for prompt caching (a flat
+    string cannot carry them).
+    """
 
     role: Literal["system"]
-    content: str
+    content: str | Sequence[OpenRouterTextPart]
 
 
 class OpenRouterUserMessage(TypedDict):

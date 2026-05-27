@@ -1,16 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncGenerator, Mapping
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Sequence, cast, override
+from uuid import uuid4
 
+from agentle.generations.models.generation.choice import Choice
 from agentle.generations.models.generation.generation import Generation
 from agentle.generations.models.generation.generation_config import GenerationConfig
 from agentle.generations.models.generation.generation_config_dict import (
     GenerationConfigDict,
 )
+from agentle.generations.models.generation.usage import Usage
+from agentle.generations.models.message_parts.text import TextPart
+from agentle.generations.models.message_parts.tool_execution_suggestion import (
+    ToolExecutionSuggestion,
+)
 from agentle.generations.models.messages.assistant_message import AssistantMessage
 from agentle.generations.models.messages.developer_message import DeveloperMessage
+from agentle.generations.models.messages.generated_assistant_message import (
+    GeneratedAssistantMessage,
+)
 from agentle.generations.models.messages.message import Message
 from agentle.generations.models.messages.user_message import UserMessage
 from agentle.generations.providers.base.generation_provider import GenerationProvider
@@ -71,11 +83,145 @@ class OllamaGenerationProvider(GenerationProvider):
         response_schema: type[T] | None = None,
         generation_config: GenerationConfig | GenerationConfigDict | None = None,
         tools: Sequence[Tool] | None = None,
-    ) -> AsyncGenerator[Generation[WithoutStructuredOutput], None]:
-        # Not implemented yet; declare as async generator to satisfy type checkers
-        raise NotImplementedError("This method is not implemented yet.")
-        if False:  # pragma: no cover
-            yield cast(Generation[WithoutStructuredOutput], None)
+    ) -> AsyncGenerator[Generation[T], None]:
+        from pydantic import BaseModel
+
+        from agentle.utils.make_fields_optional import make_fields_optional
+        from agentle.utils.parse_streaming_json import parse_streaming_json
+
+        tool_adapter = ToolToOllamaToolAdapter()
+
+        bm = cast(type[BaseModel], response_schema) if response_schema else None
+        optional_response_schema = make_fields_optional(bm) if bm else None
+
+        _generation_config = self._normalize_generation_config(generation_config)
+
+        _model = self._resolve_model(model)
+        message_adapter = MessageToOllamaMessageAdapter()
+        _messages = [message_adapter.adapt(m) for m in messages]
+
+        _tools = [tool_adapter.adapt(tool) for tool in tools] if tools else None
+
+        generation_id = uuid4()
+        created = datetime.now()
+        accumulated_content = ""
+        accumulated_thinking = ""
+        accumulated_tool_calls: list[ToolExecutionSuggestion] = []
+        seen_tool_calls: set[str] = set()
+        usage = Usage.zero()
+
+        def parse_tool_arguments(arguments: object) -> Mapping[str, object]:
+            if isinstance(arguments, Mapping):
+                return cast(Mapping[str, object], arguments)
+
+            if isinstance(arguments, str):
+                try:
+                    parsed_arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    return {}
+
+                if isinstance(parsed_arguments, Mapping):
+                    return cast(Mapping[str, object], parsed_arguments)
+
+            return {}
+
+        def tool_call_signature(tool_name: str, args: Mapping[str, object]) -> str:
+            try:
+                serialized_args = json.dumps(args, sort_keys=True, default=str)
+            except TypeError:
+                serialized_args = str(args)
+
+            return f"{tool_name}:{serialized_args}"
+
+        try:
+            async with asyncio.timeout(_generation_config.timeout_in_seconds):
+                response_stream = await self._client.chat(
+                    model=_model,
+                    messages=_messages,
+                    tools=_tools,
+                    stream=True,
+                    format=bm.model_json_schema() if bm else None,
+                    options=self.options,
+                    think=self.think,
+                )
+
+                async for chunk in response_stream:
+                    message = chunk.message
+
+                    text_content = message.content
+                    if text_content:
+                        accumulated_content += text_content
+
+                    thinking = getattr(message, "thinking", None)
+                    if thinking:
+                        accumulated_thinking += thinking
+
+                    tool_calls = message.tool_calls
+                    if tool_calls:
+                        for tool_call in tool_calls:
+                            function = tool_call.function
+                            args = parse_tool_arguments(function.arguments)
+                            signature = tool_call_signature(function.name, args)
+
+                            if signature in seen_tool_calls:
+                                continue
+
+                            seen_tool_calls.add(signature)
+                            accumulated_tool_calls.append(
+                                ToolExecutionSuggestion(
+                                    id=str(uuid4()),
+                                    tool_name=function.name,
+                                    args=args,
+                                )
+                            )
+
+                    prompt_eval_count = getattr(chunk, "prompt_eval_count", None)
+                    eval_count = getattr(chunk, "eval_count", None)
+                    if prompt_eval_count is not None or eval_count is not None:
+                        usage = Usage(
+                            prompt_tokens=prompt_eval_count or 0,
+                            completion_tokens=eval_count or 0,
+                        )
+
+                    parts: list[TextPart | ToolExecutionSuggestion] = []
+                    if accumulated_content:
+                        parts.append(TextPart(text=accumulated_content))
+
+                    parts.extend(accumulated_tool_calls)
+
+                    parsed = (
+                        parse_streaming_json(
+                            accumulated_content,
+                            model=optional_response_schema,
+                        )
+                        if optional_response_schema
+                        else None
+                    )
+
+                    generation = Generation[Any](
+                        id=generation_id,
+                        object="chat.generation",
+                        created=created,
+                        choices=[
+                            Choice[Any](
+                                index=0,
+                                message=GeneratedAssistantMessage[Any](
+                                    parts=parts,
+                                    parsed=cast(T, parsed),
+                                    reasoning=accumulated_thinking or None,
+                                ),
+                            )
+                        ],
+                        model=_model,
+                        usage=usage,
+                    )
+
+                    yield cast(Generation[T], generation)
+        except asyncio.TimeoutError as e:
+            e.add_note(
+                f"Content generation timed out after {_generation_config.timeout_in_seconds}s"
+            )
+            raise
 
     @observe
     @override

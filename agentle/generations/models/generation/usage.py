@@ -13,6 +13,8 @@ make heavy use of AI models.
 
 from __future__ import annotations
 
+from typing import Any
+
 from rsb.decorators.value_objects import valueobject
 from rsb.models.base_model import BaseModel
 from rsb.models.field import Field
@@ -57,6 +59,42 @@ class Usage(BaseModel):
         examples=[5, 250, 1000],
     )
 
+    prompt_tokens_details: dict[str, Any] | None = Field(
+        default=None,
+        description="Provider-specific breakdown of prompt/input tokens, such as cached, cache-write, or audio tokens.",
+    )
+
+    completion_tokens_details: dict[str, Any] | None = Field(
+        default=None,
+        description="Provider-specific breakdown of completion/output tokens, such as reasoning or audio tokens.",
+    )
+
+    cost: float | None = Field(
+        default=None,
+        description="Provider-reported total cost for this generation when returned by the upstream API.",
+        ge=0,
+    )
+
+    cost_details: dict[str, Any] | None = Field(
+        default=None,
+        description="Provider-specific cost breakdown for this generation.",
+    )
+
+    is_byok: bool | None = Field(
+        default=None,
+        description="Whether this generation used a bring-your-own-key provider credential when reported by the provider.",
+    )
+
+    server_tool_use: dict[str, Any] | None = Field(
+        default=None,
+        description="Provider-reported server-side tool usage, such as native web search request counts.",
+    )
+
+    raw_usage: dict[str, Any] | None = Field(
+        default=None,
+        description="Raw provider usage payload preserved for forward compatibility and auditing.",
+    )
+
     @property
     def total_tokens(self) -> int:
         """
@@ -77,9 +115,14 @@ class Usage(BaseModel):
         Returns:
             A new Usage object with summed token counts.
         """
+        cost = None
+        if self.cost is not None or other.cost is not None:
+            cost = float(self.cost or 0) + float(other.cost or 0)
+
         return Usage(
             prompt_tokens=self.prompt_tokens + other.prompt_tokens,
             completion_tokens=self.completion_tokens + other.completion_tokens,
+            cost=cost,
         )
 
     def __radd__(self, other: int | Usage) -> Usage:

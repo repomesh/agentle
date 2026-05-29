@@ -15,6 +15,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from agentle.generations.models.generation.generation import Generation
+from agentle.generations.models.generation.usage import Usage
 from agentle.generations.models.message_parts.text import TextPart
 from agentle.generations.models.message_parts.tool_execution_suggestion import (
     ToolExecutionSuggestion,
@@ -26,6 +27,9 @@ from agentle.generations.models.generation.choice import Choice
 from agentle.generations.providers.openrouter._types import (
     OpenRouterStreamResponse,
     OpenRouterStreamDelta,
+)
+from agentle.generations.providers.openrouter._adapters.openrouter_response_to_generation_adapter import (
+    _build_openrouter_usage,
 )
 from agentle.utils.parse_streaming_json import parse_streaming_json
 from agentle.utils.make_fields_optional import make_fields_optional
@@ -82,6 +86,8 @@ class OpenRouterStreamToGenerationAdapter[T]:
         accumulated_reasoning = ""
         accumulated_reasoning_details: list[dict[str, Any]] = []
         accumulated_tool_calls: dict[str, dict[str, Any]] = {}
+        accumulated_usage: dict[str, Any] | None = None
+        accumulated_model = self.model
         buffer = ""
 
         async for chunk_bytes in response_stream:
@@ -109,12 +115,15 @@ class OpenRouterStreamToGenerationAdapter[T]:
                             or accumulated_reasoning
                             or accumulated_reasoning_details
                             or accumulated_tool_calls
+                            or accumulated_usage
                         ):
                             yield self._build_generation(
                                 accumulated_content,
                                 accumulated_reasoning,
                                 accumulated_reasoning_details,
                                 accumulated_tool_calls,
+                                accumulated_usage,
+                                accumulated_model,
                             )
                         return
 
@@ -128,6 +137,14 @@ class OpenRouterStreamToGenerationAdapter[T]:
                             )
                             logger.error(f"Stream error: {error_msg}")
                             raise RuntimeError(f"OpenRouter stream error: {error_msg}")
+
+                        chunk_model = str(chunk_data.get("model") or "").strip()
+                        if chunk_model:
+                            accumulated_model = chunk_model
+
+                        chunk_usage = chunk_data.get("usage")
+                        if isinstance(chunk_usage, dict):
+                            accumulated_usage = dict(chunk_usage)
 
                         # Extract delta from first choice
                         if chunk_data.get("choices"):
@@ -183,8 +200,10 @@ class OpenRouterStreamToGenerationAdapter[T]:
                                     accumulated_reasoning,
                                     accumulated_reasoning_details,
                                     accumulated_tool_calls,
+                                    accumulated_usage,
+                                    accumulated_model,
                                 )
-                                return
+                                continue
 
                             # Yield intermediate generation
                             yield self._build_generation(
@@ -192,6 +211,17 @@ class OpenRouterStreamToGenerationAdapter[T]:
                                 accumulated_reasoning,
                                 accumulated_reasoning_details,
                                 accumulated_tool_calls,
+                                accumulated_usage,
+                                accumulated_model,
+                            )
+                        elif accumulated_usage:
+                            yield self._build_generation(
+                                accumulated_content,
+                                accumulated_reasoning,
+                                accumulated_reasoning_details,
+                                accumulated_tool_calls,
+                                accumulated_usage,
+                                accumulated_model,
                             )
 
                     except json.JSONDecodeError:
@@ -204,6 +234,8 @@ class OpenRouterStreamToGenerationAdapter[T]:
         reasoning: str,
         reasoning_details: list[dict[str, Any]],
         tool_calls: dict[str, dict[str, Any]],
+        usage_data: dict[str, Any] | None = None,
+        model: str | None = None,
     ) -> Generation[None]:
         """
         Build a Generation object from accumulated chunks.
@@ -269,17 +301,17 @@ class OpenRouterStreamToGenerationAdapter[T]:
             message=message,
         )
 
-        # Create Generation
-        # Note: Usage is not available during streaming, so we don't set it
-        from agentle.generations.models.generation.usage import Usage
+        usage = (
+            _build_openrouter_usage(usage_data)
+            if usage_data
+            else Usage(prompt_tokens=0, completion_tokens=0)
+        )
 
         return Generation[Any](
             id=uuid.uuid4(),
             choices=[choice],
             object="chat.generation",
             created=datetime.datetime.now(),
-            model=self.model,
-            usage=Usage(
-                prompt_tokens=0, completion_tokens=0
-            ),  # Placeholder since usage not available during streaming
+            model=model or self.model,
+            usage=usage,
         )

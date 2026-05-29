@@ -57,6 +57,22 @@ async def test_generate_async_sends_reasoning_config_to_openrouter():
                     "prompt_tokens": 10,
                     "completion_tokens": 5,
                     "total_tokens": 15,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 4,
+                        "cache_write_tokens": 2,
+                    },
+                    "completion_tokens_details": {
+                        "reasoning_tokens": 3,
+                        "image_tokens": 1,
+                    },
+                    "cost": 0.00042,
+                    "cost_details": {
+                        "upstream_inference_cost": 0.00031,
+                    },
+                    "is_byok": True,
+                    "server_tool_use": {
+                        "web_search_requests": 1,
+                    },
                 },
             },
         )
@@ -76,6 +92,22 @@ async def test_generate_async_sends_reasoning_config_to_openrouter():
 
     assert captured_request_body["reasoning"] == {"effort": "high", "exclude": True}
     assert generation.message.text == "Hello from OpenRouter"
+    assert generation.usage.prompt_tokens == 10
+    assert generation.usage.prompt_tokens_details == {
+        "cached_tokens": 4,
+        "cache_write_tokens": 2,
+    }
+    assert generation.usage.completion_tokens_details == {
+        "reasoning_tokens": 3,
+        "image_tokens": 1,
+    }
+    assert generation.usage.cost == 0.00042
+    assert generation.usage.cost_details == {
+        "upstream_inference_cost": 0.00031,
+    }
+    assert generation.usage.is_byok is True
+    assert generation.usage.server_tool_use == {"web_search_requests": 1}
+    assert generation.usage.raw_usage["cost"] == 0.00042
 
 
 @pytest.mark.asyncio
@@ -110,8 +142,26 @@ async def test_stream_async_sends_reasoning_config_and_preserves_reasoning_detai
                 }
             ],
         }
+        usage_chunk = {
+            "id": "resp_1",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "openai/o3-mini",
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 6,
+                "total_tokens": 17,
+                "prompt_tokens_details": {"cached_tokens": 5},
+                "completion_tokens_details": {"reasoning_tokens": 4},
+                "cost": 0.00025,
+                "cost_details": {"upstream_inference_cost": 0.0002},
+                "server_tool_use": {"web_search_requests": 2},
+            },
+        }
         content = (
             f"data: {json.dumps(chunk)}\n\n"
+            f"data: {json.dumps(usage_chunk)}\n\n"
             "data: [DONE]\n\n"
         ).encode("utf-8")
         return httpx.Response(
@@ -139,6 +189,12 @@ async def test_stream_async_sends_reasoning_config_and_preserves_reasoning_detai
     assert chunks[-1].message.text == "Hello"
     assert chunks[-1].message.reasoning == "Let me think through this first."
     assert chunks[-1].message.reasoning_details == reasoning_details
+    assert chunks[-1].usage.prompt_tokens == 11
+    assert chunks[-1].usage.prompt_tokens_details == {"cached_tokens": 5}
+    assert chunks[-1].usage.completion_tokens_details == {"reasoning_tokens": 4}
+    assert chunks[-1].usage.cost == 0.00025
+    assert chunks[-1].usage.cost_details == {"upstream_inference_cost": 0.0002}
+    assert chunks[-1].usage.server_tool_use == {"web_search_requests": 2}
 
 
 @pytest.mark.asyncio

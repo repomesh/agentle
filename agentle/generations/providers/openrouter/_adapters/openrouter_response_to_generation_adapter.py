@@ -12,7 +12,7 @@ from __future__ import annotations
 import datetime
 import logging
 import uuid
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, Any, override
 
 from rsb.adapters.adapter import Adapter
 
@@ -31,6 +31,77 @@ if TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_non_negative_int(value: Any) -> int:
+    try:
+        parsed = int(round(float(value)))
+    except (TypeError, ValueError):
+        return 0
+
+    return parsed if parsed >= 0 else 0
+
+
+def _coerce_optional_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    return parsed if parsed >= 0 else None
+
+
+def _json_safe_usage_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_safe_usage_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_usage_value(item) for item in value]
+
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return _json_safe_usage_value(model_dump())
+        except Exception:
+            pass
+
+    return str(value)
+
+
+def _build_openrouter_usage(usage_data: Any) -> Usage:
+    if not isinstance(usage_data, dict):
+        return Usage(prompt_tokens=0, completion_tokens=0)
+
+    kwargs: dict[str, Any] = {
+        "prompt_tokens": _coerce_non_negative_int(usage_data.get("prompt_tokens")),
+        "completion_tokens": _coerce_non_negative_int(
+            usage_data.get("completion_tokens")
+        ),
+        "raw_usage": _json_safe_usage_value(dict(usage_data)),
+    }
+
+    for field in (
+        "prompt_tokens_details",
+        "completion_tokens_details",
+        "cost_details",
+        "server_tool_use",
+    ):
+        value = usage_data.get(field)
+        if isinstance(value, dict):
+            kwargs[field] = _json_safe_usage_value(value)
+
+    cost = _coerce_optional_float(usage_data.get("cost"))
+    if cost is not None:
+        kwargs["cost"] = cost
+
+    if isinstance(usage_data.get("is_byok"), bool):
+        kwargs["is_byok"] = bool(usage_data["is_byok"])
+
+    return Usage(**kwargs)
 
 
 class OpenRouterResponseToGenerationAdapter[T](
@@ -110,11 +181,7 @@ class OpenRouterResponseToGenerationAdapter[T](
         ]
 
         # Extract usage information
-        usage_data = openrouter_response["usage"]
-        usage = Usage(
-            prompt_tokens=usage_data["prompt_tokens"],
-            completion_tokens=usage_data["completion_tokens"],
-        )
+        usage = _build_openrouter_usage(openrouter_response.get("usage"))
 
         # Build Generation object (pricing will be calculated by the provider)
         return Generation(
@@ -150,11 +217,7 @@ class OpenRouterResponseToGenerationAdapter[T](
         ]
 
         # Extract usage information
-        usage_data = openrouter_response["usage"]
-        usage = Usage(
-            prompt_tokens=usage_data["prompt_tokens"],
-            completion_tokens=usage_data["completion_tokens"],
-        )
+        usage = _build_openrouter_usage(openrouter_response.get("usage"))
 
         # Calculate pricing if provider and model are available
         pricing = Pricing()

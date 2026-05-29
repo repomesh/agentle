@@ -242,12 +242,18 @@ class OpenRouterWebSearchPlugin(TypedDict):
 OpenRouterPlugin = OpenRouterFileParserPlugin | OpenRouterWebSearchPlugin
 
 
-class OpenRouterUsage(TypedDict):
+class OpenRouterUsage(TypedDict, total=False):
     """Token usage information."""
 
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+    prompt_tokens_details: dict[str, Any]
+    completion_tokens_details: dict[str, Any]
+    cost: float
+    cost_details: dict[str, Any]
+    is_byok: bool
+    server_tool_use: dict[str, Any]
 
 
 class OpenRouterResponseMessage(TypedDict):
@@ -310,6 +316,7 @@ class OpenRouterStreamResponse(TypedDict):
     object: Literal["chat.completion.chunk"]
     created: int
     choices: Sequence[OpenRouterStreamChoice]
+    usage: NotRequired[OpenRouterUsage]
 
 
 class OpenRouterRequest(TypedDict, total=False):
